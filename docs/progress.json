@@ -1,0 +1,44 @@
+{
+  "project": "nightowl",
+  "schema_version": 1,
+  "current_milestone": "M5",
+  "milestones": {
+    "M1": "done",
+    "M2": "done",
+    "M3": "done",
+    "M4": "done",
+    "M5": "pending"
+  },
+  "subtasks": {
+    "m1-types": "done",
+    "m1-adapter": "done",
+    "m1-state": "done",
+    "m1-store": "done",
+    "m1-scheduler": "done",
+    "m1-typecheck": "done",
+    "m2-blueprint": "done",
+    "m2-executor": "done",
+    "m2-milestone": "done",
+    "m2-judge": "done",
+    "m3-loop": "done",
+    "m3-memory": "done",
+    "m3-prefix": "done",
+    "m4-cli": "done",
+    "m4-http": "done",
+    "m4-mcp": "done",
+    "m5-real-task": "pending",
+    "m5-cost": "done"
+  },
+  "last_heartbeat": "2026-08-20T08:00:48+08:00",
+  "last_action": "m5-real-task 仍阻塞：复检 env(grep -i deepseek 无命中，仅 TWITTER_API_KEY 无关) 无 DEEPSEEK_API_KEY；src/providers 仅 adapter.ts+deepseek.ts 无 MockProviderAdapter。唯一 pending 子任务 m5-real-task（M1-M4 + m5-cost 全 done）依赖真实模型调用无法推进。blocker m5-real-task-no-api-key 有效且此前无 notified 标记 → 按流程推送微信卡点通知（POST /api/messages/send 返回 success），并停用心跳 cron（1b6a587f evening + 095933b6 night 均 enabled=false）。已给 blocker 加 notified:true（幂等防重复推）。等用户拍板：① 提供 DEEPSEEK_API_KEY；或 ② 授权实现 MockProviderAdapter 离线跑通 loop→executor→judge→milestone→cost 全链路。",
+  "blockers": [
+    {
+      "id": "m5-real-task-no-api-key",
+      "subtask": "m5-real-task",
+      "desc": "端到端 dogfood 需真实 DeepSeek 模型调用，但环境无 DEEPSEEK_API_KEY（已排查 env、~/.bashrc、~/.profile、~/.bash_profile、~/.env、config.json、deepseek-harness、nightowl 工作区均无）。需用户拍板：① 提供 DEEPSEEK_API_KEY；或 ② 允许先实现 MockProviderAdapter 离线跑通 loop→executor→judge→milestone→cost 全链路（验证 plumbing，非真实模型调用）。",
+      "created_at": "2026-08-20T01:22:00+08:00",
+      "notified": true,
+      "notified_at": "2026-08-20T08:00:48+08:00"
+    }
+  ]
+}

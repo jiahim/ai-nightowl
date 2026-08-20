@@ -1,0 +1,63 @@
+# ===== nightowl .gitignore =====
+# 适配场景：自驱动 agent 服务、DSSE、planned cost tracking
+# 维护原则：先按一刀切保护 secrets/build/editor；再按项目特例逐条加。
+# Rev: 2026-08-20
+
+# Build artifacts
+/dist/
+*.tsbuildinfo
+
+# Test artifacts (保留核心 smoke)
+test-smoke-*.ts.todo
+
+# 历史备份（m3/m4 几次心跳迭代留的）
+*.bak
+*.bak.*
+src/**/*.bak.*
+src/**/*.bak
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+.envrc
+*.pem
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Runtime data (state.json 状态机、滚动摘要)
+.nightowl/
+.nightowl-store/
+*.nightowl/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node / TS
+node_modules/
+lerna-debug.log
+.pnpm-debug.log
+
+# Coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# pnpm
+.pnpm-store/
+
+# TS caches
+*.tsbuildinfo
+.tsbuild-cache/
+
+# Build outputs (keep dist if you mirror for releases)
+# dist/ 已在 # Build artifacts 中排除

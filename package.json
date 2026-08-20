@@ -1,0 +1,27 @@
+{
+  "name": "nightowl",
+  "version": "0.1.0",
+  "description": "夜猫子 —— 自驱动的夜间任务编排引擎（night owl: off-peak task orchestrator）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nightowl": "dist/cli.js",
+    "nightowl-serve": "dist/http/server.js",
+    "nightowl-mcp": "dist/mcp/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "license": "MIT"
+}
