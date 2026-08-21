@@ -7,7 +7,7 @@
     "M2": "done",
     "M3": "done",
     "M4": "done",
-    "M5": "pending"
+    "M5": "done"
   },
   "subtasks": {
     "m1-types": "done",
@@ -26,19 +26,22 @@
     "m4-cli": "done",
     "m4-http": "done",
     "m4-mcp": "done",
-    "m5-real-task": "pending",
+    "m5-real-task": "done",
     "m5-cost": "done"
   },
-  "last_heartbeat": "2026-08-20T08:00:48+08:00",
-  "last_action": "m5-real-task 仍阻塞：复检 env(grep -i deepseek 无命中，仅 TWITTER_API_KEY 无关) 无 DEEPSEEK_API_KEY；src/providers 仅 adapter.ts+deepseek.ts 无 MockProviderAdapter。唯一 pending 子任务 m5-real-task（M1-M4 + m5-cost 全 done）依赖真实模型调用无法推进。blocker m5-real-task-no-api-key 有效且此前无 notified 标记 → 按流程推送微信卡点通知（POST /api/messages/send 返回 success），并停用心跳 cron（1b6a587f evening + 095933b6 night 均 enabled=false）。已给 blocker 加 notified:true（幂等防重复推）。等用户拍板：① 提供 DEEPSEEK_API_KEY；或 ② 授权实现 MockProviderAdapter 离线跑通 loop→executor→judge→milestone→cost 全链路。",
+  "last_heartbeat": "2026-08-21T23:41:00+08:00",
+  "last_action": "M5 dogfood 完成（2026-08-21 23:35-23:41 北京，空闲时段）：用户提供 DEEPSEEK_API_KEY + 授权智谱 coding plan，模型策略定为 v4-flash 默认 / glm-5.3 兜底 / v4-pro 困难。新增 ZhipuAdapter（baseUrl https://open.bigmodel.cn/api/coding/paas/v4，模型 glm-5.3 8/28/2 元，无时段折扣 preferCache）+ DeepSeekAdapter 模型表更新为 deepseek-v4-flash（高峰 3/9/0.1 元，1M ctx）与 deepseek-v4-pro（9/27/0.3）。三个模型连通性全通过。dogfood 脚本 docs/dogfood-m5.ts 跑通 loop→executor→judge→milestone→cost：12 tick、4/4 子任务 done、2/2 里程碑 done、24 次调用全部空闲时段，actualCost 0.27126 元（listCost 0.54252，5 折省 0.27126）。心跳 cron 已恢复 enabled（evening 1b6a587f + night 095933b6）。",
   "blockers": [
     {
       "id": "m5-real-task-no-api-key",
       "subtask": "m5-real-task",
-      "desc": "端到端 dogfood 需真实 DeepSeek 模型调用，但环境无 DEEPSEEK_API_KEY（已排查 env、~/.bashrc、~/.profile、~/.bash_profile、~/.env、config.json、deepseek-harness、nightowl 工作区均无）。需用户拍板：① 提供 DEEPSEEK_API_KEY；或 ② 允许先实现 MockProviderAdapter 离线跑通 loop→executor→judge→milestone→cost 全链路（验证 plumbing，非真实模型调用）。",
+      "desc": "端到端 dogfood 需真实模型调用，但环境无 DEEPSEEK_API_KEY。需用户拍板：① 提供 DEEPSEEK_API_KEY；或 ② 允许先实现 MockProviderAdapter 离线跑通全链路。",
       "created_at": "2026-08-20T01:22:00+08:00",
       "notified": true,
-      "notified_at": "2026-08-20T08:00:48+08:00"
+      "notified_at": "2026-08-20T08:00:48+08:00",
+      "resolved": true,
+      "resolved_at": "2026-08-21T23:41:00+08:00",
+      "resolution": "用户提供 DEEPSEEK_API_KEY 并用智谱 coding plan 兜底；m5-real-task 以真实 v4-flash dogfood 跑通"
     }
   ]
 }

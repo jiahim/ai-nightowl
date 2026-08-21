@@ -19,6 +19,8 @@ import { pathToFileURL } from 'node:url';
 import { HttpApi, type HttpResponse } from './api.js';
 import { Store } from '../memory/store.js';
 import { DeepSeekAdapter } from '../providers/deepseek.js';
+import { ZhipuAdapter } from '../providers/zhipu.js';
+import type { ProviderAdapter } from '../providers/adapter.js';
 import { Executor } from '../executor/executor.js';
 import { SubtaskJudge, type LlmJudgeFn } from '../judge/subtask.js';
 import { Scheduler } from '../runtime/scheduler.js';
@@ -89,9 +91,21 @@ export function createHttpServer(api: HttpApi): Server {
  * runOffPeakOnly=false：HTTP 显式触发即跑，不做时段门控（宿主决定何时调）。
  * CostTracker：execute 与 judge 的每次模型调用都记录 token 成本，供 GET /cost 查询。
  */
+/**
+ * 按环境选择平台 adapter。
+ * 显式 `NIGHTOWL_PROVIDER=deepseek|zhipu` 优先；缺省时看哪个平台的 key 存在
+ * （有 DEEPSEEK_API_KEY 用 DeepSeek，否则回退智谱——OpenAI 兼容，dogfood 主用）。
+ */
+export function resolveAdapter(): ProviderAdapter {
+  const provider = process.env.NIGHTOWL_PROVIDER;
+  if (provider === 'zhipu') return new ZhipuAdapter();
+  if (provider === 'deepseek') return new DeepSeekAdapter();
+  return process.env.DEEPSEEK_API_KEY ? new DeepSeekAdapter() : new ZhipuAdapter();
+}
+
 export function buildServeApi(dir: string): HttpApi {
   const store = new Store(dir);
-  const adapter = new DeepSeekAdapter();
+  const adapter = resolveAdapter();
   const tracker = new CostTracker();
 
   const llmJudge: LlmJudgeFn = async (_subtask, prompt, _criteria) => {
