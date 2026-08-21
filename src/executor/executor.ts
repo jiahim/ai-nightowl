@@ -68,8 +68,26 @@ export class Executor {
     const user: string[] = [];
     user.push(`子任务【${subtask.name}】`);
     if (subtask.detail) user.push(`说明：${subtask.detail}`);
+
+    // 上游依赖子任务的产出：作为本任务的参考材料。
+    // dogfood 暴露的坑（2026-08-21）：s4-review 依赖 s3-draft，但 executor
+    // 只传了本子任务的 evidence，模型永远看不到上游草稿 → 只能答"无法复核"。
+    const allSubtasks = bp.milestones.flatMap((m) => m.subtasks);
+    const depEvidence: string[] = [];
+    for (const depId of subtask.dependencies) {
+      const dep = allSubtasks.find((s) => s.id === depId);
+      if (!dep) continue;
+      for (const e of dep.evidence) {
+        if (e.content) depEvidence.push(`[${dep.name} / ${e.kind}] ${e.content}`);
+      }
+    }
+    if (depEvidence.length > 0) {
+      user.push('上游子任务产出（完成本任务必需的参考材料）：');
+      for (const d of depEvidence) user.push(`- ${d}`);
+    }
+
     if (subtask.evidence.length > 0) {
-      user.push('已积累的证据：');
+      user.push('本子任务已积累的证据：');
       for (const e of subtask.evidence) {
         if (e.content) user.push(`- [${e.kind}] ${e.content}`);
       }

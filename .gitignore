@@ -7,6 +7,9 @@
 /dist/
 *.tsbuildinfo
 
+# AI agent handoff docs (inter-session, not for repo)
+docs/HANDOFF.md
+
 # Test artifacts (保留核心 smoke)
 test-smoke-*.ts.todo
 
@@ -61,3 +64,4 @@ coverage/
 
 # Build outputs (keep dist if you mirror for releases)
 # dist/ 已在 # Build artifacts 中排除
+.nightowl-dogfood/
