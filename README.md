@@ -1,4 +1,4 @@
-# nightowl 夜猫子
+# ai-nightowl 夜猫子
 
 自驱动的夜间任务编排引擎。在模型平台的夜间低谷时段，自动推进「蓝图 → 子任务 → 里程碑」直至完成大目标。
 
@@ -11,7 +11,7 @@
 ## 架构
 
 ```
-nightowl —— 自驱动 agent 编排服务（TS/Node.js 常驻进程）
+ai-nightowl —— 自驱动 agent 编排服务（TS/Node.js 常驻进程）
 
 ┌─ 运行时外壳 runtime（驱动 + 入口）
 │   ├── loop         # 自驱动事件循环：夜间低价时段定时唤醒 + tick 推进

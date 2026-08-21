@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * nightowl HTTP server 入口（m4-http 的 IO 外壳）。
+ * ai-nightowl HTTP server 入口（m4-http 的 IO 外壳）。
  *
- * 把框架无关的 HttpApi 接到 node:http 上，并提供一个 `nightowl-serve`
+ * 把框架无关的 HttpApi 接到 node:http 上，并提供一个 `ai-nightowl-serve`
  * 独立进程入口（也可被宿主 import 后自行 startServer 嵌入）。
  *
  * 分层职责：
@@ -162,7 +162,7 @@ function parseArgs(argv: string[]): ServeOptions {
 
 async function serveMain(): Promise<void> {
   const opts = parseArgs(process.argv);
-  const dir = resolve(opts.dir ?? '.nightowl');
+  const dir = resolve(opts.dir ?? '.ai-nightowl');
   const api = buildServeApi(dir);
   const server = await startServer(api, opts);
 
@@ -172,7 +172,7 @@ async function serveMain(): Promise<void> {
     ? addr.address
     : (opts.host ?? DEFAULT_HOST);
 
-  console.log(`nightowl HTTP API 已启动：http://${host}:${port}`);
+  console.log(`ai-nightowl HTTP API 已启动：http://${host}:${port}`);
   console.log(`数据目录：${dir}`);
   console.log('端点：GET /health、GET /status、POST /blueprint、POST /blueprint/raw、POST /tick、POST /run');
 }

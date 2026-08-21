@@ -51,7 +51,7 @@ export interface HttpResponse {
 
 /** 状态查询返回的结构（供宿主展示 / 判定） */
 export interface StatusResponse {
-  project: 'nightowl';
+  project: 'ai-nightowl';
   hasBlueprint: boolean;
   blueprint?: {
     id: string;
@@ -96,7 +96,7 @@ export class HttpError extends Error {
 export function buildStatus(state: StoreState | null): StatusResponse {
   if (!state) {
     return {
-      project: 'nightowl',
+      project: 'ai-nightowl',
       hasBlueprint: false,
       milestones: [],
       progress: { done: 0, total: 0, percent: 0 },
@@ -112,7 +112,7 @@ export function buildStatus(state: StoreState | null): StatusResponse {
   const total = subtasks.length;
 
   return {
-    project: 'nightowl',
+    project: 'ai-nightowl',
     hasBlueprint: true,
     blueprint: {
       id: bp.id,
@@ -293,7 +293,7 @@ export class HttpApi {
     switch (pathname) {
       case '/health':
         if (method !== 'GET') return this.methodNotAllowed('GET');
-        return this.json(200, { ok: true, project: 'nightowl', version: PROJECT_VERSION });
+        return this.json(200, { ok: true, project: 'ai-nightowl', version: PROJECT_VERSION });
 
       case '/status':
         if (method !== 'GET') return this.methodNotAllowed('GET');

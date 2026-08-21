@@ -77,7 +77,7 @@ export function buildServeMcp(dir: string): McpRouter {
   const tools = buildMcpTools(api);
   return new McpRouter({
     tools,
-    serverInfo: { name: 'nightowl', version: PROJECT_VERSION },
+    serverInfo: { name: 'ai-nightowl', version: PROJECT_VERSION },
   });
 }
 
@@ -96,9 +96,9 @@ function parseArgs(argv: string[]): McpServeOptions {
 
 async function serveMcpMain(): Promise<void> {
   const opts = parseArgs(process.argv);
-  const dir = resolve(opts.dir ?? '.nightowl');
+  const dir = resolve(opts.dir ?? '.ai-nightowl');
   const router = buildServeMcp(dir);
-  console.error(`nightowl MCP server 已启动（stdio）`);
+  console.error(`ai-nightowl MCP server 已启动（stdio）`);
   console.error(`数据目录：${dir}`);
   console.error('工具：get_status、get_cost、submit_blueprint、submit_blueprint_raw、tick、run');
   await new McpStdioServer(router).start();

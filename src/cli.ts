@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * nightowl CLI 入口（m4-cli）。
+ * ai-nightowl CLI 入口（m4-cli）。
  *
  * 宿主零改造对接的第一种方式：命令行交互。
  *   - init   ：聊天式多轮问答 → 结构化 Blueprint → 落盘 state.json
@@ -19,19 +19,19 @@ import { BlueprintGuide } from './blueprint/guide.js';
 import { Store, type StoreState } from './memory/store.js';
 import type { SubtaskStatus } from './types.js';
 
-const USAGE = `nightowl —— 夜猫子（夜间任务编排引擎）CLI
+const USAGE = `ai-nightowl —— 夜猫子（夜间任务编排引擎）CLI
 
 用法：
-  nightowl init [--dir <path>]    交互式问答创建蓝图，保存到 <path>/state.json（默认 ./.nightowl）
-  nightowl status [--dir <path>]  查看当前蓝图与子任务进度
-  nightowl help                   显示本帮助
+  ai-nightowl init [--dir <path>]    交互式问答创建蓝图，保存到 <path>/state.json（默认 ./.ai-nightowl）
+  ai-nightowl status [--dir <path>]  查看当前蓝图与子任务进度
+  ai-nightowl help                   显示本帮助
 `;
 
 /** 解析命令行参数：返回命令名 + 数据目录（绝对路径） */
 function parseArgs(argv: string[]): { command: string; dir: string } {
   const args = argv.slice(2);
   const command = args[0] ?? 'help';
-  let dir = resolve('.nightowl');
+  let dir = resolve('.ai-nightowl');
   for (let i = 1; i < args.length; i += 1) {
     if (args[i] === '--dir' && args[i + 1]) {
       dir = resolve(args[i + 1]);
@@ -59,7 +59,7 @@ function statusMark(s: SubtaskStatus): string {
 /** 格式化进度文本（纯函数，供 status 命令与测试复用） */
 export function statusText(state: StoreState | null): string {
   if (!state) {
-    return '（无蓝图）当前目录尚未初始化，请先运行 `nightowl init`。';
+    return '（无蓝图）当前目录尚未初始化，请先运行 `ai-nightowl init`。';
   }
   const bp = state.blueprint;
   const subtasks = bp.milestones.flatMap((m) => m.subtasks);
@@ -93,7 +93,7 @@ export function statusText(state: StoreState | null): string {
 /** init 命令：多轮问答 → 组装蓝图 → 落盘 */
 async function initBlueprint(dir: string): Promise<void> {
   const rl = createInterface({ input, output });
-  console.log('欢迎使用 nightowl 蓝图引导，按提示逐条回答即可。\n');
+  console.log('欢迎使用 ai-nightowl 蓝图引导，按提示逐条回答即可。\n');
   const guide = new BlueprintGuide('blueprint');
   try {
     while (!guide.isDone()) {
