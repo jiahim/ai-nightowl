@@ -8,6 +8,8 @@ export interface ChatResult {
     promptTokens: number;
     completionTokens: number;
   };
+  /** 实际使用的模型规格（failover 切平台后可能与请求模型不同；成本按它算） */
+  spec?: ModelSpec;
 }
 
 /**

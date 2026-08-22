@@ -1,4 +1,4 @@
-import type { Blueprint, Evidence, Message, Subtask } from '../types.js';
+import type { Blueprint, Evidence, Message, ModelSpec, Subtask } from '../types.js';
 import type { ChatResult, ProviderAdapter } from '../providers/adapter.js';
 import type { CostTracker } from '../cost/tracker.js';
 
@@ -102,11 +102,36 @@ export class Executor {
 
   /**
    * 执行单个子任务：选模型 → 调 provider → 收集 evidence。
-   * 失败时抛出（由运行时 loop 决定重试 / 标记 blocked）。
+   *
+   * 模型选择（用户策略 2026-08-21）：
+   *   - 正常：routeModel（v4-flash）
+   *   - 故障（429/网络/5xx）：FailoverAdapter 链内自动切 glm-5.3（策略 2）
+   *   - 困难升级：同一子任务已执行 ≥2 次仍失败（judge 反复 not_done）→
+   *     换 reasoner 强模型（v4-pro）尝试（策略 3）；再不行才由 loop 标 blocked
    */
   async execute(bp: Blueprint, subtask: Subtask): Promise<ExecutorResult> {
-    const spec = this.adapter.routeModel('execute');
     const messages = this.buildMessages(bp, subtask);
+    return this.runOnce(bp, subtask, messages, this.pickModel(subtask));
+  }
+
+  /** 按子任务执行历史选模型；已反复失败则升级 reasoner 强模型 */
+  private pickModel(subtask: Subtask): ModelSpec {
+    const execCount = subtask.evidence.filter(
+      (e) => e.kind === 'log' && e.content?.startsWith('模型 '),
+    ).length;
+    const first = this.adapter.routeModel('execute');
+    if (execCount < 2) return first;
+    const hard = this.adapter.config.models.find((m) => m.kind === 'reasoner');
+    return hard && hard.name !== first.name ? hard : first;
+  }
+
+  /** 单次模型调用 + 证据收集 + 成本记录 */
+  private async runOnce(
+    bp: Blueprint,
+    subtask: Subtask,
+    messages: Message[],
+    spec: ModelSpec,
+  ): Promise<ExecutorResult> {
     const result = await this.adapter.chat(spec.name, messages, {
       maxTokens: this.maxTokens,
     });
@@ -119,8 +144,9 @@ export class Executor {
       },
     ];
     if (this.tracker && result.usage) {
+      // 成本按实际模型规格记账（failover 切平台后 result.spec 才是真实价格）
       this.tracker.record({
-        model: spec,
+        model: result.spec ?? spec,
         kind: 'execute',
         promptTokens: result.usage.promptTokens,
         completionTokens: result.usage.completionTokens,

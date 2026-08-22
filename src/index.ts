@@ -8,6 +8,7 @@
 export * from './types.js';
 export { DeepSeekAdapter } from './providers/deepseek.js';
 export { ZhipuAdapter } from './providers/zhipu.js';
+export { FailoverAdapter, isRetryableProviderError } from './providers/failover.js';
 export type { ProviderAdapter, ChatResult } from './providers/adapter.js';
 export { PlanState } from './plan/state.js';
 export { Store } from './memory/store.js';

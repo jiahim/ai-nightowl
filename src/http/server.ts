@@ -20,6 +20,7 @@ import { HttpApi, type HttpResponse } from './api.js';
 import { Store } from '../memory/store.js';
 import { DeepSeekAdapter } from '../providers/deepseek.js';
 import { ZhipuAdapter } from '../providers/zhipu.js';
+import { FailoverAdapter } from '../providers/failover.js';
 import type { ProviderAdapter } from '../providers/adapter.js';
 import { Executor } from '../executor/executor.js';
 import { SubtaskJudge, type LlmJudgeFn } from '../judge/subtask.js';
@@ -92,15 +93,32 @@ export function createHttpServer(api: HttpApi): Server {
  * CostTracker：execute 与 judge 的每次模型调用都记录 token 成本，供 GET /cost 查询。
  */
 /**
- * 按环境选择平台 adapter。
- * 显式 `NIGHTOWL_PROVIDER=deepseek|zhipu` 优先；缺省时看哪个平台的 key 存在
- * （有 DEEPSEEK_API_KEY 用 DeepSeek，否则回退智谱——OpenAI 兼容，dogfood 主用）。
+ * 按环境选择平台链（Failover）。
+ * 用户模型策略（2026-08-21）：正常 DeepSeek v4-flash；flash 没钱 → glm-5.3 顶上；
+ * 困难问题 → v4-pro / glm-5.3。failover 按模型名路由链，429/5xx/网络自动切下一个平台。
+ *
+ * - env `NIGHTOWL_PROVIDER=deepseek|zhipu` 显式锁定首选平台
+ * - 缺省：有 DEEPSEEK_API_KEY → deepseek 优先；否则 zhipu
+ * - 都没 key：仍包 DeepSeek（保留 "Missing API key" 报错语义）
  */
 export function resolveAdapter(): ProviderAdapter {
   const provider = process.env.NIGHTOWL_PROVIDER;
-  if (provider === 'zhipu') return new ZhipuAdapter();
-  if (provider === 'deepseek') return new DeepSeekAdapter();
-  return process.env.DEEPSEEK_API_KEY ? new DeepSeekAdapter() : new ZhipuAdapter();
+  const hasDeepseek = Boolean(process.env.DEEPSEEK_API_KEY);
+  const hasZhipu = Boolean(process.env.ZHIPU_API_KEY);
+
+  const adapters: ProviderAdapter[] = [];
+  if (provider === 'zhipu') {
+    if (hasZhipu) adapters.push(new ZhipuAdapter());
+    if (hasDeepseek) adapters.push(new DeepSeekAdapter());
+  } else {
+    if (hasDeepseek) adapters.push(new DeepSeekAdapter());
+    if (hasZhipu) adapters.push(new ZhipuAdapter());
+  }
+  if (adapters.length === 0) adapters.push(new DeepSeekAdapter());
+
+  return adapters.length === 1
+    ? adapters[0]
+    : new FailoverAdapter(adapters);
 }
 
 export function buildServeApi(dir: string): HttpApi {
@@ -117,7 +135,7 @@ export function buildServeApi(dir: string): HttpApi {
     const r = await adapter.chat(spec.name, messages);
     if (r.usage) {
       tracker.record({
-        model: spec,
+        model: r.spec ?? spec, // failover 切平台后按实际模型记账
         kind: 'judge',
         promptTokens: r.usage.promptTokens,
         completionTokens: r.usage.completionTokens,
