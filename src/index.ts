@@ -61,7 +61,7 @@ export type {
   HttpApiOptions,
   StatusResponse,
 } from './http/api.js';
-export { createHttpServer, startServer, buildServeApi } from './http/server.js';
+export { createHttpServer, startServer, buildServeApi, resolveAdapter } from './http/server.js';
 export type { ServeOptions } from './http/server.js';
 export { McpRouter, SUPPORTED_PROTOCOL_VERSIONS } from './mcp/protocol.js';
 export type {

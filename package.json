@@ -1,20 +1,46 @@
 {
   "name": "ai-nightowl",
-  "version": "0.1.0",
-  "description": "ai-nightowl —— 自驱动的夜间任务编排引擎（night owl: off-peak task orchestrator）",
+  "version": "0.2.0",
+  "description": "ai-nightowl —— 自驱动的夜间任务编排引擎（night owl: off-peak task orchestrator），DeepSeek/智谱双平台自动故障转移，按时段折扣记账",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "ai-nightowl": "dist/cli.js",
     "ai-nightowl-serve": "dist/http/server.js",
     "ai-nightowl-mcp": "dist/mcp/server.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run build",
     "dev": "tsx src/index.ts"
   },
+  "keywords": [
+    "agent",
+    "orchestrator",
+    "deepseek",
+    "zhipu",
+    "glm",
+    "llm",
+    "off-peak",
+    "task-planning"
+  ],
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.6.0",
