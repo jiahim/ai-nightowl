@@ -65,3 +65,4 @@ coverage/
 # Build outputs (keep dist if you mirror for releases)
 # dist/ 已在 # Build artifacts 中排除
 .nightowl-dogfood/
+*.tgz
