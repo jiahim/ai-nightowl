@@ -1,15 +1,34 @@
 import type { Message, ModelSpec, ProviderConfig, TaskKind } from '../types.js';
 
+/** 不携带上游响应体的安全 Provider 错误；retryable 供故障转移内部判断。 */
+export class ProviderRequestError extends Error {
+  constructor(
+    readonly providerId: string,
+    readonly status: number,
+    readonly retryable: boolean,
+  ) {
+    super(`${providerId} 请求失败（HTTP ${status}）`);
+    this.name = 'ProviderRequestError';
+  }
+}
+
 /** 模型调用结果 */
 export interface ChatResult {
   content: string;
   model: string;
+  /** 实际响应平台；故障转移后可能与调用入口 adapter 不同。 */
+  providerId?: string;
   usage?: {
     promptTokens: number;
     completionTokens: number;
   };
   /** 实际使用的模型规格（failover 切平台后可能与请求模型不同；成本按它算） */
   spec?: ModelSpec;
+  /** 实际平台在调用时刻的计价上下文。 */
+  pricing?: {
+    offPeak: boolean;
+    discount: number;
+  };
 }
 
 /**
@@ -33,5 +52,9 @@ export interface ProviderAdapter {
   routeModel(kind: TaskKind): ModelSpec;
 
   /** 调用模型（OpenAI 兼容 chat/completions） */
-  chat(model: string, messages: Message[], opts?: { maxTokens?: number }): Promise<ChatResult>;
+  chat(
+    model: string,
+    messages: Message[],
+    opts?: { maxTokens?: number; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<ChatResult>;
 }

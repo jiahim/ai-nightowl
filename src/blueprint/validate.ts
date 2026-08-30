@@ -40,11 +40,14 @@ export function validateBlueprint(bp: Blueprint): string[] {
   const subtaskNames = new Map<string, string>(); // name → id（查重）
 
   for (const m of bp.milestones) {
+    if (!m.id.trim()) errors.push('里程碑 id 不能为空');
     if (!m.name.trim()) errors.push(`里程碑 ${m.id} 的 name 不能为空`);
     if (milestoneIds.has(m.id)) errors.push(`里程碑 id 重复：${m.id}`);
     milestoneIds.add(m.id);
+    if (m.subtasks.length === 0) errors.push(`里程碑 ${m.id} 至少需要一个子任务`);
 
     for (const s of m.subtasks) {
+      if (!s.id.trim()) errors.push(`里程碑 ${m.id} 中存在空的子任务 id`);
       if (!s.name.trim()) errors.push(`子任务 ${s.id} 的 name 不能为空`);
       if (subtaskIds.has(s.id)) errors.push(`子任务 id 重复：${s.id}`);
       subtaskIds.add(s.id);
@@ -53,6 +56,12 @@ export function validateBlueprint(bp: Blueprint): string[] {
         errors.push(`子任务名称重复（依赖按名称解析会歧义）：${s.name}`);
       }
       subtaskNames.set(s.name, s.id);
+
+      if (!['llm', 'check', 'manual'].includes(s.verdict.kind)) {
+        errors.push(`子任务 ${s.id} 的 verdict.kind 非法：${String(s.verdict.kind)}`);
+      } else if (s.verdict.kind === 'check' && !s.verdict.check?.trim()) {
+        errors.push(`check 子任务 ${s.id} 缺少 verdict.check`);
+      }
     }
   }
 

@@ -15,8 +15,9 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { BlueprintGuide } from './blueprint/guide.js';
-import { Store, type StoreState } from './memory/store.js';
+import { Store, STORE_SCHEMA_VERSION, type StoreState } from './memory/store.js';
 import type { SubtaskStatus } from './types.js';
 
 const USAGE = `ai-nightowl —— 夜猫子（夜间任务编排引擎）CLI
@@ -82,8 +83,15 @@ export function statusText(state: StoreState | null): string {
   }
   lines.push('');
   lines.push(
-    `整体进度：${doneCount}/${total} 子任务${total > 0 && doneCount === total ? '（全部完成 🎉）' : ''}`,
+    `子任务进度：${doneCount}/${total}`,
   );
+  if (state.completion.status === 'done') {
+    lines.push(`整体验收：✅ ${state.completion.detail ?? '已通过'}`);
+  } else if (state.completion.status === 'blocked') {
+    lines.push(`整体验收：⛔ ${state.completion.detail ?? '未通过，需处理后重试'}`);
+  } else {
+    lines.push('整体验收：⬜ 待完成里程碑后执行');
+  }
   if (state.checkpoints.length > 0) {
     lines.push(`里程碑 checkpoint：${state.checkpoints.length} 个已达成`);
   }
@@ -105,10 +113,12 @@ async function initBlueprint(dir: string): Promise<void> {
     const bp = guide.build();
     const store = new Store(dir);
     await store.save({
+      schemaVersion: STORE_SCHEMA_VERSION,
       blueprint: bp,
       checkpoints: [],
       rollingSummaries: [],
       updatedAt: '',
+      completion: { status: 'pending' },
     });
     console.log(
       `\n蓝图「${bp.title}」已创建，共 ${bp.milestones.length} 个里程碑，保存到 ${join(dir, 'state.json')}`,
@@ -145,7 +155,7 @@ async function main(): Promise<void> {
 // 仅当作为入口直接执行时运行 main()（被 import 做测试时不触发副作用）
 const isMain =
   process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isMain) {
   main().catch((err: unknown) => {

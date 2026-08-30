@@ -110,10 +110,12 @@ export class McpRouter {
 
     const method = msg.method;
     const params = msg.params;
+    const hasId = Object.prototype.hasOwnProperty.call(msg, 'id');
     const id = extractId(msg);
+    if (hasId && id === null && msg.id !== null) return this.invalidRequest(null);
 
     // 通知：无 id，不响应
-    if (id === null) {
+    if (!hasId) {
       this.handleNotification(method);
       return null;
     }
@@ -168,9 +170,8 @@ export class McpRouter {
       capabilities: { tools: { listChanged: false } },
       serverInfo: this.serverInfo,
       instructions:
-        'nightowl 夜猫子任务编排引擎。工具：get_status（查进度）、' +
-        'submit_blueprint（提交蓝图草稿）、submit_blueprint_raw（提交完整蓝图）、' +
-        'tick（推进一轮）、run（循环推进）。',
+        'ai-nightowl 本地任务编排服务。可查询状态/成本/插件，提交蓝图，' +
+        '单步或后台运行，并显式重试 blocked、批准 manual 子任务。',
     };
   }
 
@@ -192,6 +193,9 @@ export class McpRouter {
       throw rpcError(INVALID_PARAMS, `未知工具：${name}`);
     }
     const args = asObject(p.arguments);
+    for (const field of tool.inputSchema.required ?? []) {
+      if (!(field in args)) throw rpcError(INVALID_PARAMS, `工具 ${name} 缺少必填参数：${field}`);
+    }
 
     let result: ToolResult;
     try {
@@ -220,7 +224,7 @@ export class McpRouter {
 /** 从消息里取 id（number/string），否则 null（通知 / 无 id） */
 function extractId(msg: Record<string, unknown>): number | string | null {
   const id = msg.id;
-  return typeof id === 'number' || typeof id === 'string' ? id : null;
+  return typeof id === 'number' || typeof id === 'string' || id === null ? id : null;
 }
 
 function asObject(v: unknown): Record<string, unknown> {

@@ -147,11 +147,12 @@ export class Executor {
       // 成本按实际模型规格记账（failover 切平台后 result.spec 才是真实价格）
       this.tracker.record({
         model: result.spec ?? spec,
+        providerId: result.providerId,
         kind: 'execute',
         promptTokens: result.usage.promptTokens,
         completionTokens: result.usage.completionTokens,
-        offPeak: this.adapter.isOffPeak(new Date()),
-        discount: this.adapter.currentDiscount(new Date()),
+        offPeak: result.pricing?.offPeak ?? this.adapter.isOffPeak(new Date()),
+        discount: result.pricing?.discount ?? this.adapter.currentDiscount(new Date()),
         at: new Date(at),
       });
     }

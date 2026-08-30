@@ -31,6 +31,8 @@ export interface CostEntry {
   /** ISO 时间戳 */
   at: string;
   model: string;
+  /** 实际响应平台（旧记录可缺省）。 */
+  providerId?: string;
   /** 调用用途（execute / judge / plan / summarize） */
   kind: string;
   promptTokens: number;
@@ -94,6 +96,7 @@ export function computeCallCost(input: CallCostInput): {
 /** 单条成本记录入参 */
 export interface RecordInput {
   model: ModelSpec;
+  providerId?: string;
   kind: string;
   promptTokens: number;
   completionTokens: number;
@@ -119,6 +122,7 @@ export class CostTracker {
     this.entries.push({
       at: (input.at ?? new Date()).toISOString(),
       model: input.model.name,
+      providerId: input.providerId,
       kind: input.kind,
       promptTokens: Math.max(0, input.promptTokens),
       completionTokens: Math.max(0, input.completionTokens),

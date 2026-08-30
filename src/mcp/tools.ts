@@ -39,6 +39,18 @@ export function buildMcpTools(api: HttpApi): McpTool[] {
       handler: () => callApi(api, { method: 'GET', pathname: '/cost', body: undefined }),
     },
     {
+      name: 'get_runtime',
+      description: '查询后台运行状态、最近 tick 报告和错误。',
+      inputSchema: { type: 'object', properties: {} },
+      handler: () => callApi(api, { method: 'GET', pathname: '/runtime', body: undefined }),
+    },
+    {
+      name: 'get_plugins',
+      description: '查询已加载的可信本地插件和 Provider 目录。',
+      inputSchema: { type: 'object', properties: {} },
+      handler: () => callApi(api, { method: 'GET', pathname: '/plugins', body: undefined }),
+    },
+    {
       name: 'submit_blueprint',
       description:
         '提交一个蓝图草稿（draft），nightowl 自动组装为结构化蓝图并落盘（会清空旧进度）。' +
@@ -68,6 +80,7 @@ export function buildMcpTools(api: HttpApi): McpTool[] {
                       detail: { type: 'string' },
                       dependencies: { type: 'array', items: { type: 'string' } },
                       verdictKind: { type: 'string', enum: ['llm', 'check', 'manual'] },
+                      check: { type: 'string', description: 'verdictKind=check 时的检查标识' },
                       criteria: { type: 'array', items: { type: 'string' } },
                     },
                   },
@@ -140,14 +153,60 @@ export function buildMcpTools(api: HttpApi): McpTool[] {
     },
     {
       name: 'run',
-      description: '循环推进直到完成或卡住（可选 maxTicks 限定轮数）。',
+      description: '兼容名称：非阻塞启动后台推进，立即返回 operationId；用 get_runtime/stop 控制。',
       inputSchema: {
         type: 'object',
         properties: {
           maxTicks: { type: 'number', description: '最多推进轮数（正整数，可选）' },
         },
       },
-      handler: (args) => callApi(api, { method: 'POST', pathname: '/run', body: args }),
+      handler: (args) => callApi(api, { method: 'POST', pathname: '/runtime/start', body: args }),
+    },
+    {
+      name: 'start',
+      description: '非阻塞启动后台推进；立即返回 operationId，可用 get_runtime 查询。',
+      inputSchema: {
+        type: 'object',
+        properties: { maxTicks: { type: 'number', description: '最多推进轮数（1–1000）' } },
+      },
+      handler: (args) => callApi(api, { method: 'POST', pathname: '/runtime/start', body: args }),
+    },
+    {
+      name: 'stop',
+      description: '停止后台运行继续领取任务；当前模型调用完成后收束。',
+      inputSchema: { type: 'object', properties: {} },
+      handler: () => callApi(api, { method: 'POST', pathname: '/runtime/stop', body: {} }),
+    },
+    {
+      name: 'retry_subtask',
+      description: '把一个 blocked 子任务显式恢复为 pending。',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: '子任务 id' } },
+        required: ['id'],
+      },
+      handler: (args) => callApi(api, {
+        method: 'POST',
+        pathname: `/subtasks/${encodeURIComponent(String(args.id ?? ''))}/retry`,
+        body: {},
+      }),
+    },
+    {
+      name: 'approve_subtask',
+      description: '人工批准一个 manual verdict 子任务。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '子任务 id' },
+          note: { type: 'string', description: '批准说明' },
+        },
+        required: ['id'],
+      },
+      handler: (args) => callApi(api, {
+        method: 'POST',
+        pathname: `/subtasks/${encodeURIComponent(String(args.id ?? ''))}/approve`,
+        body: { note: args.note },
+      }),
     },
   ];
 }

@@ -1,5 +1,5 @@
 import type { Message, ModelSpec, ProviderConfig, TaskKind } from '../types.js';
-import type { ChatResult, ProviderAdapter } from './adapter.js';
+import { ProviderRequestError, type ChatResult, type ProviderAdapter } from './adapter.js';
 import { inWindow, minutesInBeijing } from '../time.js';
 
 /**
@@ -78,7 +78,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
   async chat(
     model: string,
     messages: Message[],
-    opts?: { maxTokens?: number },
+    opts?: { maxTokens?: number; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<ChatResult> {
     const apiKey = process.env[this.config.apiKeyEnv];
     if (!apiKey) {
@@ -97,11 +97,14 @@ export class DeepSeekAdapter implements ProviderAdapter {
         max_tokens: opts?.maxTokens ?? 4096,
         stream: false,
       }),
+      signal: opts?.signal ?? AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
     });
 
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`DeepSeek API error ${res.status}: ${body}`);
+      const body = (await res.text()).slice(0, 4096);
+      const retryable = [408, 425, 429].includes(res.status) || res.status >= 500 ||
+        /余额不足|insufficient|无可用资源包/i.test(body);
+      throw new ProviderRequestError(this.id, res.status, retryable);
     }
 
     const data = (await res.json()) as {
@@ -109,9 +112,15 @@ export class DeepSeekAdapter implements ProviderAdapter {
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
 
+    const pricedAt = new Date();
     return {
       content: data.choices?.[0]?.message?.content ?? '',
       model,
+      providerId: this.id,
+      pricing: {
+        offPeak: this.isOffPeak(pricedAt),
+        discount: this.currentDiscount(pricedAt),
+      },
       usage: data.usage
         ? {
             promptTokens: data.usage.prompt_tokens ?? 0,

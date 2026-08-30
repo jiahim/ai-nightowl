@@ -1,5 +1,5 @@
 import type { Message, ModelSpec, ProviderConfig, TaskKind } from '../types.js';
-import type { ChatResult, ProviderAdapter } from './adapter.js';
+import { ProviderRequestError, type ChatResult, type ProviderAdapter } from './adapter.js';
 
 /**
  * 多平台故障转移适配器（2026-08-21，模型策略落地）。
@@ -37,7 +37,10 @@ const CHAINS: Record<string, Array<[string, string]>> = {
 
 /** 可恢复错误：切换平台重试有意义 */
 export function isRetryableProviderError(err: unknown): boolean {
-  const msg = (err as Error).message ?? String(err);
+  if (err instanceof ProviderRequestError) return err.retryable;
+  if (err instanceof Error && err.name === 'TimeoutError') return true;
+  if (err instanceof Error && err.name === 'AbortError') return false;
+  const msg = err instanceof Error ? err.message : String(err);
   return (
     /fetch failed|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(msg) || // 网络
     /429|5\d\d|rate limit|too many/i.test(msg) || // 限流 / 服务端
@@ -110,7 +113,7 @@ export class FailoverAdapter implements ProviderAdapter {
   async chat(
     model: string,
     messages: Message[],
-    opts?: { maxTokens?: number },
+    opts?: { maxTokens?: number; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<ChatResult> {
     const chain = this.chainFor(model);
     if (chain.length === 0) {
@@ -125,7 +128,15 @@ export class FailoverAdapter implements ProviderAdapter {
         const spec =
           adapter.config.models.find((x) => x.name === r.model) ??
           adapter.config.models.find((x) => x.name === m);
-        return spec ? { ...r, spec } : r;
+        const pricedAt = new Date();
+        const actual = {
+          providerId: adapter.id,
+          pricing: r.pricing ?? {
+            offPeak: adapter.isOffPeak(pricedAt),
+            discount: adapter.currentDiscount(pricedAt),
+          },
+        };
+        return spec ? { ...r, ...actual, spec } : { ...r, ...actual };
       } catch (err) {
         lastErr = err;
         if (!isRetryableProviderError(err)) throw err; // 不可恢复：不切换

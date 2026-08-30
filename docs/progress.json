@@ -1,13 +1,18 @@
 {
-  "project": "nightowl",
-  "schema_version": 1,
-  "current_milestone": "M5",
+  "project": "ai-nightowl",
+  "schema_version": 2,
+  "current_milestone": "M6",
   "milestones": {
     "M1": "done",
     "M2": "done",
     "M3": "done",
     "M4": "done",
-    "M5": "done"
+    "M5": "done",
+    "M6": "in-progress",
+    "M7": "pending",
+    "M8": "pending",
+    "M9": "pending",
+    "M10": "pending"
   },
   "subtasks": {
     "m1-types": "done",
@@ -27,10 +32,18 @@
     "m4-http": "done",
     "m4-mcp": "done",
     "m5-real-task": "done",
-    "m5-cost": "done"
+    "m5-cost": "done",
+    "m6-product-blueprint": "done",
+    "m6-state-correctness": "done",
+    "m6-background-controller": "done",
+    "m6-web-console-preview": "done",
+    "m6-plugin-kernel-preview": "done",
+    "m6-real-tests": "done",
+    "m6-durable-run-model": "pending",
+    "m6-versioned-api-events": "pending"
   },
-  "last_heartbeat": "2026-08-21T23:49:36+08:00",
-  "last_action": "m5-real-task done：blocker m5-real-task-no-api-key 已解除（工作区 ai-nightowl/.env 出现 DEEPSEEK_API_KEY len=35 与 ZHIPU_API_KEY len=49，用户走选项①）。并行会话已备好 WIP：src/providers/zhipu.ts（智谱 GLM adapter）、docs/dogfood-m5.ts（HTTP 外壳端到端脚本）、src/http/server.ts resolveAdapter()（有 DEEPSEEK_API_KEY 走 DeepSeek 否则回退 Zhipu）、deepseek.ts 升级 V4 定价（v4-flash 3/9/0.1、v4-pro 9/27/0.3）。npx tsc --noEmit 零错误。执行 set -a && source .env && npx tsx docs/dogfood-m5.ts：13 ticks 全链路跑通（blueprint→loop→executor→judge→milestone→cost），4/4 子任务 done、2/2 里程碑 done、done:true；cost 26 calls 全 off-peak（23:40 北京），prompt 19412 + completion 51243 tokens，list 0.519 元 → actual 0.260 元（5 折省 0.260）。产物 .nightowl-dogfood/state.json（22KB）。M5 全部 done → 5/5 里程碑完成，推送微信🎉全部完成并停心跳。",
+  "last_heartbeat": "2026-08-30T01:13:40+08:00",
+  "last_action": "完成 V2 蓝图与 V1 PRD；修复 stale state、单运行并发、batch stop、blocked 隐式重跑、验收异常重复执行、旧完成态/旧 checkpoint 假验收、manual 越权批准、verdict 静默降级、Store 非原子写入、Provider 超时故障转移和 failover 计费；交付后台 RunController、本地 Web Console、可信本地 Provider 插件内核预览、33 项真实断言、HTTP/安装包测试与浏览器端到端验收。M6 仍在进行，下一步是 BlueprintVersion/Run/Attempt/Event/Approval/Artifact 耐久模型与版本化 API。",
   "blockers": [
     {
       "id": "m5-real-task-no-api-key",
