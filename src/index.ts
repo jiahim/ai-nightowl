@@ -2,16 +2,19 @@
  * nightowl —— 夜猫子
  * 自驱动的夜间任务编排引擎。
  *
- * 当前为第一版骨架：类型定义 + DeepSeek adapter + 状态机 + 落盘存储 + 调度器。
- * 尚未实现：blueprint 引导引擎、executor、milestone 判定、runtime loop、interfaces。
+ * 当前为可运行的本地单蓝图 POC，并提供 CLI / HTTP / MCP / Web 控制入口。
+ * V1 正在演进为耐久 Run、审批、Artifact 与插件化能力平台。
  */
 export * from './types.js';
 export { DeepSeekAdapter } from './providers/deepseek.js';
 export { ZhipuAdapter } from './providers/zhipu.js';
 export { FailoverAdapter, isRetryableProviderError } from './providers/failover.js';
 export type { ProviderAdapter, ChatResult } from './providers/adapter.js';
+export { ProviderRequestError } from './providers/adapter.js';
 export { PlanState } from './plan/state.js';
 export { Store } from './memory/store.js';
+export { StoreReadError } from './memory/store.js';
+export { STORE_SCHEMA_VERSION } from './memory/store.js';
 export type { StoreState } from './memory/store.js';
 export { Summarizer } from './memory/summarizer.js';
 export type {
@@ -25,8 +28,17 @@ export type {
   PrefixContext,
 } from './memory/prefix.js';
 export { Scheduler } from './runtime/scheduler.js';
-export { NightOwlLoop } from './runtime/loop.js';
-export type { LoopOptions, TickReport } from './runtime/loop.js';
+export { NightOwlLoop, LoopBusyError } from './runtime/loop.js';
+export type {
+  LoopOptions,
+  TickReport,
+  RunOptions,
+  VerificationResult,
+  MilestoneVerifier,
+  BlueprintVerifier,
+} from './runtime/loop.js';
+export { RunController, RuntimeBusyError } from './runtime/controller.js';
+export type { RuntimePhase, RuntimeSnapshot } from './runtime/controller.js';
 export { BlueprintGuide, assembleBlueprint } from './blueprint/guide.js';
 export type {
   BlueprintDraft,
@@ -75,3 +87,21 @@ export type {
 export { buildMcpTools } from './mcp/tools.js';
 export { McpStdioServer, buildServeMcp } from './mcp/server.js';
 export type { McpServeOptions } from './mcp/server.js';
+export {
+  PluginRegistry,
+  PLUGIN_API_VERSION,
+  loadPluginModules,
+  validatePluginManifest,
+  collectPluginSpecifiers,
+} from './plugins/registry.js';
+export type {
+  PluginCapability,
+  PluginPermission,
+  PluginContribution,
+  NightOwlPluginManifest,
+  NightOwlPlugin,
+  PluginContext,
+  PluginSnapshot,
+} from './plugins/registry.js';
+export { getWebAsset } from './web/console.js';
+export type { WebAsset } from './web/console.js';

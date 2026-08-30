@@ -1,5 +1,5 @@
 import type { Message, ModelSpec, ProviderConfig, TaskKind } from '../types.js';
-import type { ChatResult, ProviderAdapter } from './adapter.js';
+import { ProviderRequestError, type ChatResult, type ProviderAdapter } from './adapter.js';
 
 /**
  * 智谱（BigModel / Zhipu）适配器。
@@ -63,7 +63,7 @@ export class ZhipuAdapter implements ProviderAdapter {
   async chat(
     model: string,
     messages: Message[],
-    opts?: { maxTokens?: number },
+    opts?: { maxTokens?: number; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<ChatResult> {
     const apiKey = process.env[this.config.apiKeyEnv];
     if (!apiKey) {
@@ -82,11 +82,14 @@ export class ZhipuAdapter implements ProviderAdapter {
         max_tokens: opts?.maxTokens ?? 4096,
         stream: false,
       }),
+      signal: opts?.signal ?? AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
     });
 
     if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Zhipu API error ${res.status}: ${body}`);
+      const body = (await res.text()).slice(0, 4096);
+      const retryable = [408, 425, 429].includes(res.status) || res.status >= 500 ||
+        /余额不足|insufficient|无可用资源包/i.test(body);
+      throw new ProviderRequestError(this.id, res.status, retryable);
     }
 
     const data = (await res.json()) as {
@@ -97,6 +100,8 @@ export class ZhipuAdapter implements ProviderAdapter {
     return {
       content: data.choices?.[0]?.message?.content ?? '',
       model,
+      providerId: this.id,
+      pricing: { offPeak: false, discount: 1 },
       usage: data.usage
         ? {
             promptTokens: data.usage.prompt_tokens ?? 0,

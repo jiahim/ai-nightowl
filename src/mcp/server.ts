@@ -17,15 +17,22 @@
  */
 
 import { createInterface } from 'node:readline';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpRouter, type JsonRpcResponse } from './protocol.js';
 import { buildMcpTools } from './tools.js';
 import { buildServeApi } from '../http/server.js';
 import { PROJECT_VERSION } from '../http/api.js';
+import {
+  PluginRegistry,
+  collectPluginSpecifiers,
+  loadPluginModules,
+} from '../plugins/registry.js';
 
 export interface McpServeOptions {
   dir?: string;
+  plugins?: string[];
 }
 
 /** stdio transport：stdin 一行一消息 → dispatch → stdout 一行一响应 */
@@ -72,8 +79,11 @@ export class McpStdioServer {
 }
 
 /** 组装完整 MCP 服务：复用 HttpApi 的完整引擎装配，包成 MCP 工具 + router */
-export function buildServeMcp(dir: string): McpRouter {
-  const api = buildServeApi(dir);
+export function buildServeMcp(
+  dir: string,
+  options: { plugins?: PluginRegistry } = {},
+): McpRouter {
+  const api = buildServeApi(dir, { plugins: options.plugins });
   const tools = buildMcpTools(api);
   return new McpRouter({
     tools,
@@ -89,6 +99,9 @@ function parseArgs(argv: string[]): McpServeOptions {
     if (args[i] === '--dir' && args[i + 1]) {
       opts.dir = args[i + 1];
       i += 1;
+    } else if (args[i] === '--plugin' && args[i + 1]) {
+      (opts.plugins ??= []).push(args[i + 1]);
+      i += 1;
     }
   }
   return opts;
@@ -97,17 +110,18 @@ function parseArgs(argv: string[]): McpServeOptions {
 async function serveMcpMain(): Promise<void> {
   const opts = parseArgs(process.argv);
   const dir = resolve(opts.dir ?? '.ai-nightowl');
-  const router = buildServeMcp(dir);
+  const plugins = await loadPluginModules(collectPluginSpecifiers(opts.plugins));
+  const router = buildServeMcp(dir, { plugins });
   console.error(`ai-nightowl MCP server 已启动（stdio）`);
   console.error(`数据目录：${dir}`);
-  console.error('工具：get_status、get_cost、submit_blueprint、submit_blueprint_raw、tick、run');
+  console.error('工具：状态、成本、插件、蓝图、tick、后台 start/stop、retry/approve');
   await new McpStdioServer(router).start();
 }
 
 // 仅当作为入口直接执行时运行（被 import 做测试时不触发副作用）
 const isMain =
   process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isMain) {
   serveMcpMain().catch((err: unknown) => {

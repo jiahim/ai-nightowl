@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "description": "ai-nightowl —— 自驱动的夜间任务编排引擎（night owl: off-peak task orchestrator），DeepSeek/智谱双平台自动故障转移，按时段折扣记账",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -19,6 +20,9 @@
   },
   "files": [
     "dist",
+    "docs/blueprint.md",
+    "docs/PRD.md",
+    "docs/plugin-development.md",
     "README.md",
     "LICENSE"
   ],
@@ -28,7 +32,15 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm run build",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:integration": "node --import tsx --test test/integration/*.test.ts",
+    "test:package": "pnpm build && node --import tsx test/package-smoke.ts",
+    "check": "pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm build",
+    "serve": "node dist/http/server.js",
+    "mcp": "node dist/mcp/server.js",
+    "cli": "node dist/cli.js",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "dev": "tsx src/index.ts"
   },
   "keywords": [

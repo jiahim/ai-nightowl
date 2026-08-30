@@ -5,11 +5,13 @@ import type {
   VerdictKind,
 } from '../types.js';
 import { PlanState } from '../plan/state.js';
-import { Store, type StoreState } from '../memory/store.js';
+import { Store, STORE_SCHEMA_VERSION, type StoreState } from '../memory/store.js';
 import { assembleBlueprint, type BlueprintDraft } from '../blueprint/guide.js';
 import { validateBlueprint } from '../blueprint/validate.js';
-import type { NightOwlLoop } from '../runtime/loop.js';
+import { LoopBusyError, type NightOwlLoop } from '../runtime/loop.js';
 import type { CostTracker } from '../cost/tracker.js';
+import { RunController, RuntimeBusyError } from '../runtime/controller.js';
+import type { PluginRegistry } from '../plugins/registry.js';
 
 /**
  * HTTP API（m4-http）。
@@ -32,7 +34,7 @@ import type { CostTracker } from '../cost/tracker.js';
  *   - 输入宽松规整（缺字段给默认值），非法结构抛 HttpError(400)，不吞错
  */
 
-export const PROJECT_VERSION = '0.1.0';
+export const PROJECT_VERSION = '0.2.0';
 
 /** 框架无关的请求形状（server.ts 从 node:http 映射过来） */
 export interface HttpRequest {
@@ -67,10 +69,21 @@ export interface StatusResponse {
     goal: string;
     done: number;
     total: number;
-    subtasks: Array<{ id: string; name: string; status: SubtaskStatus }>;
+    subtasks: Array<{
+      id: string;
+      name: string;
+      detail: string;
+      status: SubtaskStatus;
+      dependencies: string[];
+      verdictKind: VerdictKind;
+      approvable: boolean;
+      evidenceCount: number;
+      lastEvidence?: string;
+    }>;
   }>;
   progress: { done: number; total: number; percent: number };
   done: boolean;
+  completion: StoreState['completion'] | null;
   checkpoints: number;
   updatedAt: string | null;
 }
@@ -81,6 +94,10 @@ export interface HttpApiOptions {
   loop?: NightOwlLoop;
   /** 可选：注入后 GET /cost 返回累计成本汇总 */
   tracker?: CostTracker;
+  /** 可选：后台运行控制器；注入后开放 /runtime/*。 */
+  controller?: RunController;
+  /** 可选：可信本地插件目录；注入后开放 GET /plugins。 */
+  plugins?: PluginRegistry;
 }
 
 /** 带状态码的业务错误（入参非法 → 400；能力缺失 → 501） */
@@ -101,6 +118,7 @@ export function buildStatus(state: StoreState | null): StatusResponse {
       milestones: [],
       progress: { done: 0, total: 0, percent: 0 },
       done: false,
+      completion: null,
       checkpoints: 0,
       updatedAt: null,
     };
@@ -128,14 +146,32 @@ export function buildStatus(state: StoreState | null): StatusResponse {
       goal: m.goal,
       done: m.subtasks.filter((s) => s.status === 'done').length,
       total: m.subtasks.length,
-      subtasks: m.subtasks.map((s) => ({ id: s.id, name: s.name, status: s.status })),
+      subtasks: m.subtasks.map((s) => {
+        const last = s.evidence.at(-1);
+        return {
+          id: s.id,
+          name: s.name,
+          detail: s.detail,
+          status: s.status,
+          dependencies: s.dependencies,
+          verdictKind: s.verdict.kind,
+          approvable:
+            s.verdict.kind === 'manual' &&
+            s.status === 'blocked' &&
+            s.dependencies.every((id) => subtasks.find((item) => item.id === id)?.status === 'done') &&
+            s.evidence.some((item) => item.kind === 'log' || item.kind === 'artifact'),
+          evidenceCount: s.evidence.length,
+          lastEvidence: last?.content ?? last?.path,
+        };
+      }),
     })),
     progress: {
       done: doneCount,
       total,
       percent: total > 0 ? Math.round((doneCount / total) * 100) : 0,
     },
-    done: plan.isDone(),
+    done: state.completion.status === 'done',
+    completion: state.completion,
     checkpoints: state.checkpoints.length,
     updatedAt: state.updatedAt || null,
   };
@@ -155,16 +191,17 @@ function asObject(v: unknown): Record<string, unknown> {
   return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
 }
 
-function asStatus(v: unknown): SubtaskStatus {
-  return v === 'done' || v === 'in-progress' || v === 'blocked' ? v : 'pending';
+function asVerdictKind(v: unknown, field = 'verdict.kind'): VerdictKind {
+  if (v === undefined) return 'llm';
+  if (v === 'llm' || v === 'check' || v === 'manual') return v;
+  throw new HttpError(400, `${field} 必须是 llm、check 或 manual`);
 }
 
-function asVerdictKind(v: unknown): VerdictKind {
-  return v === 'check' || v === 'manual' ? v : 'llm';
-}
-
-function asVerdict(v: unknown): Verdict {
+function asVerdict(v: unknown, strict = false): Verdict {
   const o = asObject(v);
+  if (strict && (!v || typeof v !== 'object' || Array.isArray(v) || o.kind === undefined)) {
+    throw new HttpError(400, 'raw Blueprint 的每个子任务都必须提供 verdict.kind');
+  }
   const kind = asVerdictKind(o.kind);
   return {
     kind,
@@ -196,7 +233,8 @@ function draftFromBody(body: unknown): BlueprintDraft {
           name: asString(s.name).trim(),
           detail: asString(s.detail),
           dependencies: asStringArray(s.dependencies),
-          verdictKind: asVerdictKind(s.verdictKind),
+          verdictKind: asVerdictKind(s.verdictKind, 'verdictKind'),
+          check: typeof s.check === 'string' ? s.check : undefined,
           criteria: asStringArray(s.criteria),
         };
       }),
@@ -206,7 +244,7 @@ function draftFromBody(body: unknown): BlueprintDraft {
   return {
     id: asString(b.id, 'blueprint'),
     title,
-    description: asString(b.description),
+    description: asString(b.description, title).trim() || title,
     constraints: asStringArray(b.constraints),
     milestones,
     definitionOfDone: asString(b.definitionOfDone),
@@ -227,7 +265,7 @@ function blueprintFromBody(body: unknown): Blueprint {
   const bp: Blueprint = {
     id,
     title,
-    description: asString(b.description),
+    description: asString(b.description, title).trim() || title,
     constraints: asStringArray(b.constraints),
     definitionOfDone: asString(b.definitionOfDone),
     milestones: milestonesRaw.map((mRaw, mi) => {
@@ -238,16 +276,16 @@ function blueprintFromBody(body: unknown): Blueprint {
         name: asString(m.name).trim(),
         goal: asString(m.goal),
         acceptance: asStringArray(m.acceptance),
-        status: asStatus(m.status),
+        status: 'pending',
         subtasks: subtasksRaw.map((sRaw, si) => {
           const s = asObject(sRaw);
           return {
-            id: asString(s.id, `t${si + 1}`),
+            id: asString(s.id, `m${mi + 1}-t${si + 1}`),
             name: asString(s.name).trim(),
             detail: asString(s.detail),
             dependencies: asStringArray(s.dependencies),
-            verdict: asVerdict(s.verdict),
-            status: asStatus(s.status),
+            verdict: asVerdict(s.verdict, true),
+            status: 'pending',
             evidence: [],
           };
         }),
@@ -266,11 +304,17 @@ export class HttpApi {
   private readonly store: Store;
   private readonly loop?: NightOwlLoop;
   private readonly tracker?: CostTracker;
+  private readonly controller?: RunController;
+  private readonly plugins?: PluginRegistry;
+  /** 兼容的同步 /run 与单步 /tick 共享一个前台执行租约。 */
+  private foregroundActive = false;
 
   constructor(options: HttpApiOptions) {
     this.store = options.store;
     this.loop = options.loop;
     this.tracker = options.tracker;
+    this.controller = options.controller;
+    this.plugins = options.plugins;
   }
 
   /** 统一入口：路由 + 错误兜底（业务错误按 status，未知错误 500） */
@@ -281,7 +325,10 @@ export class HttpApi {
       if (err instanceof HttpError) {
         return this.json(err.status, { error: err.message });
       }
-      return this.json(500, { error: (err as Error).message });
+      if (err instanceof LoopBusyError) {
+        return this.json(409, { error: err.message });
+      }
+      return this.json(500, { error: '内部执行错误', code: 'INTERNAL_ERROR' });
     }
   }
 
@@ -290,6 +337,9 @@ export class HttpApi {
     pathname: string,
     body: unknown,
   ): Promise<HttpResponse> {
+    const dynamic = await this.routeDynamic(method, pathname, body);
+    if (dynamic) return dynamic;
+
     switch (pathname) {
       case '/health':
         if (method !== 'GET') return this.methodNotAllowed('GET');
@@ -304,6 +354,44 @@ export class HttpApi {
         if (!this.tracker) throw new HttpError(501, '未注入 tracker，/cost 不可用');
         return this.json(200, this.tracker.summary());
 
+      case '/runtime':
+        if (method !== 'GET') return this.methodNotAllowed('GET');
+        if (!this.controller) throw new HttpError(501, '未注入 controller，后台运行不可用');
+        return this.json(200, this.controller.snapshot());
+
+      case '/runtime/start':
+        if (method !== 'POST') return this.methodNotAllowed('POST');
+        return this.startRuntime(body);
+
+      case '/runtime/stop':
+        if (method !== 'POST') return this.methodNotAllowed('POST');
+        if (!this.controller) throw new HttpError(501, '未注入 controller，后台运行不可用');
+        return this.json(202, this.controller.stop());
+
+      case '/plugins':
+        if (method !== 'GET') return this.methodNotAllowed('GET');
+        return this.json(200, this.plugins?.snapshot() ?? {
+          apiVersion: '1',
+          trustModel: 'trusted-local',
+          plugins: [],
+          providers: [],
+        });
+
+      case '/capabilities':
+        if (method !== 'GET') return this.methodNotAllowed('GET');
+        return this.json(200, {
+          version: PROJECT_VERSION,
+          modes: {
+            cli: 'available',
+            http: 'available',
+            mcp: 'available',
+            web: 'preview',
+            plugin: 'preview',
+            remoteWorker: 'planned',
+          },
+          runtimeControl: Boolean(this.controller),
+        });
+
       case '/blueprint':
         if (method !== 'POST') return this.methodNotAllowed('POST');
         return this.submitDraft(body);
@@ -314,8 +402,7 @@ export class HttpApi {
 
       case '/tick':
         if (method !== 'POST') return this.methodNotAllowed('POST');
-        if (!this.loop) throw new HttpError(501, '未注入 loop，/tick 不可用');
-        return this.json(200, await this.loop.tick());
+        return this.tickLoop();
 
       case '/run':
         if (method !== 'POST') return this.methodNotAllowed('POST');
@@ -328,7 +415,12 @@ export class HttpApi {
 
   private async submitDraft(body: unknown): Promise<HttpResponse> {
     const draft = draftFromBody(body);
-    const bp = assembleBlueprint(draft.id, draft);
+    let bp: Blueprint;
+    try {
+      bp = assembleBlueprint(draft.id, draft);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
     await this.freshSave(bp);
     return this.json(201, { created: true, blueprint: bp });
   }
@@ -341,21 +433,210 @@ export class HttpApi {
 
   private async runLoop(body: unknown): Promise<HttpResponse> {
     if (!this.loop) throw new HttpError(501, '未注入 loop，/run 不可用');
-    let maxTicks: number | undefined;
+    let maxTicks = 100;
     const b = asObject(body);
-    if (typeof b.maxTicks === 'number' && b.maxTicks > 0) maxTicks = b.maxTicks;
-    const reports = await this.loop.run(maxTicks !== undefined ? { maxTicks } : undefined);
-    return this.json(200, { reports });
+    if (b.maxTicks !== undefined) {
+      if (!Number.isInteger(b.maxTicks) || (b.maxTicks as number) <= 0 || (b.maxTicks as number) > 1000) {
+        throw new HttpError(400, 'maxTicks 必须是 1–1000 的整数');
+      }
+      maxTicks = b.maxTicks as number;
+    }
+
+    // 正式服务中的同步兼容接口也复用同一个 controller，因而可被
+    // /runtime/stop 停止，且不会与后台 start 形成第二个运行 driver。
+    if (this.controller) {
+      try {
+        this.controller.start({ maxTicks });
+      } catch (err) {
+        if (err instanceof RuntimeBusyError) throw new HttpError(409, err.message);
+        throw err;
+      }
+      const runtime = await this.controller.wait();
+      if (runtime.phase === 'failed') {
+        return this.json(500, { error: runtime.error, code: 'RUN_FAILED', runtime });
+      }
+      return this.json(200, { reports: this.controller.allReports(), runtime });
+    }
+
+    this.acquireForeground();
+    try {
+      const reports = await this.loop.run({ maxTicks });
+      return this.json(200, { reports });
+    } finally {
+      this.foregroundActive = false;
+    }
+  }
+
+  private async tickLoop(): Promise<HttpResponse> {
+    if (!this.loop) throw new HttpError(501, '未注入 loop，/tick 不可用');
+    this.acquireForeground();
+    try {
+      return this.json(200, await this.loop.tick());
+    } finally {
+      this.foregroundActive = false;
+    }
+  }
+
+  private acquireForeground(): void {
+    if (this.foregroundActive || this.controller?.snapshot().active) {
+      throw new HttpError(409, '已有运行正在进行；请等待完成或先停止后台运行');
+    }
+    this.foregroundActive = true;
   }
 
   /** 发新任务 = 全新状态：清空旧 checkpoint / 滚动摘要 */
   private async freshSave(bp: Blueprint): Promise<void> {
-    await this.store.save({
-      blueprint: bp,
-      checkpoints: [],
-      rollingSummaries: [],
-      updatedAt: '',
+    if (this.foregroundActive || this.controller?.snapshot().active) {
+      throw new HttpError(409, '后台运行进行中；请先停止，再替换蓝图');
+    }
+    if (this.loop) {
+      await this.loop.replaceBlueprint(bp);
+    } else {
+      await this.store.save({
+        schemaVersion: STORE_SCHEMA_VERSION,
+        blueprint: bp,
+        checkpoints: [],
+        rollingSummaries: [],
+        updatedAt: '',
+        completion: { status: 'pending' },
+      });
+    }
+  }
+
+  private startRuntime(body: unknown): HttpResponse {
+    if (!this.controller) throw new HttpError(501, '未注入 controller，后台运行不可用');
+    if (this.foregroundActive) throw new HttpError(409, '已有前台运行正在进行');
+    const b = asObject(body);
+    let maxTicks: number | undefined;
+    if (b.maxTicks !== undefined) {
+      if (!Number.isInteger(b.maxTicks) || (b.maxTicks as number) <= 0 || (b.maxTicks as number) > 1000) {
+        throw new HttpError(400, 'maxTicks 必须是 1–1000 的整数');
+      }
+      maxTicks = b.maxTicks as number;
+    }
+    try {
+      return this.json(202, this.controller.start(maxTicks ? { maxTicks } : undefined));
+    } catch (err) {
+      if (err instanceof RuntimeBusyError) throw new HttpError(409, err.message);
+      throw err;
+    }
+  }
+
+  private async routeDynamic(
+    method: string,
+    pathname: string,
+    body: unknown,
+  ): Promise<HttpResponse | null> {
+    const subtaskMatch = pathname.match(/^\/subtasks\/([^/]+)(?:\/(retry|approve))?$/);
+    if (subtaskMatch) {
+      const id = decodePathSegment(subtaskMatch[1]);
+      const action = subtaskMatch[2];
+      if (!action) {
+        if (method !== 'GET') return this.methodNotAllowed('GET');
+        const state = await this.store.load();
+        const milestone = state?.blueprint.milestones.find((m) => m.subtasks.some((s) => s.id === id));
+        const subtask = milestone?.subtasks.find((s) => s.id === id);
+        if (!state || !milestone || !subtask) return this.json(404, { error: `子任务不存在：${id}` });
+        return this.json(200, { blueprintId: state.blueprint.id, milestone: {
+          id: milestone.id,
+          name: milestone.name,
+          status: milestone.status,
+        }, subtask });
+      }
+      if (method !== 'POST') return this.methodNotAllowed('POST');
+      return action === 'retry' ? this.retrySubtask(id) : this.approveSubtask(id, body);
+    }
+
+    const milestoneMatch = pathname.match(/^\/milestones\/([^/]+)\/retry$/);
+    if (milestoneMatch) {
+      if (method !== 'POST') return this.methodNotAllowed('POST');
+      return this.retryMilestone(decodePathSegment(milestoneMatch[1]));
+    }
+
+    if (pathname === '/completion/retry') {
+      if (method !== 'POST') return this.methodNotAllowed('POST');
+      const updated = await this.mutateState((state) => {
+        if (state.completion?.status !== 'blocked') {
+          throw new HttpError(409, '整体完成验收当前不处于 blocked');
+        }
+        state.completion = { status: 'pending' };
+      });
+      if (!updated) return this.json(404, { error: '尚未创建蓝图' });
+      return this.json(200, buildStatus(updated));
+    }
+    return null;
+  }
+
+  private async retrySubtask(id: string): Promise<HttpResponse> {
+    const updated = await this.mutateState((state) => {
+      const milestone = state.blueprint.milestones.find((m) => m.subtasks.some((s) => s.id === id));
+      const subtask = milestone?.subtasks.find((s) => s.id === id);
+      if (!milestone || !subtask) throw new HttpError(404, `子任务不存在：${id}`);
+      if (subtask.status !== 'blocked') throw new HttpError(409, '只有 blocked 子任务可以重试');
+      subtask.status = 'pending';
+      subtask.evidence.push({
+        kind: 'note',
+        content: '用户请求重试。',
+        at: new Date().toISOString(),
+      });
+      milestone.status = 'pending';
+      state.completion = { status: 'pending' };
     });
+    if (!updated) return this.json(404, { error: '尚未创建蓝图' });
+    return this.json(200, buildStatus(updated));
+  }
+
+  private async approveSubtask(id: string, body: unknown): Promise<HttpResponse> {
+    const b = asObject(body);
+    const note = asString(b.note, '用户人工确认通过').slice(0, 500);
+    const updated = await this.mutateState((state) => {
+      const milestone = state.blueprint.milestones.find((m) => m.subtasks.some((s) => s.id === id));
+      const subtask = milestone?.subtasks.find((s) => s.id === id);
+      if (!milestone || !subtask) throw new HttpError(404, `子任务不存在：${id}`);
+      if (subtask.verdict.kind !== 'manual') throw new HttpError(409, '只有 manual 子任务可以人工批准');
+      if (subtask.status === 'done') return;
+      if (subtask.status !== 'blocked') {
+        throw new HttpError(409, 'manual 子任务只有在执行后进入 blocked 才可批准');
+      }
+      const allSubtasks = state.blueprint.milestones.flatMap((item) => item.subtasks);
+      if (!subtask.dependencies.every((depId) => allSubtasks.find((item) => item.id === depId)?.status === 'done')) {
+        throw new HttpError(409, 'manual 子任务的依赖尚未全部完成');
+      }
+      if (!subtask.evidence.some((item) => item.kind === 'log' || item.kind === 'artifact')) {
+        throw new HttpError(409, 'manual 子任务尚无可审批的执行证据');
+      }
+      subtask.status = 'done';
+      subtask.evidence.push({ kind: 'note', content: `人工批准：${note}`, at: new Date().toISOString() });
+      milestone.status = 'in-progress';
+      state.completion = { status: 'pending' };
+    });
+    if (!updated) return this.json(404, { error: '尚未创建蓝图' });
+    return this.json(200, buildStatus(updated));
+  }
+
+  private async retryMilestone(id: string): Promise<HttpResponse> {
+    const updated = await this.mutateState((state) => {
+      const milestone = state.blueprint.milestones.find((m) => m.id === id);
+      if (!milestone) throw new HttpError(404, `里程碑不存在：${id}`);
+      if (milestone.status !== 'blocked' || !milestone.subtasks.every((s) => s.status === 'done')) {
+        throw new HttpError(409, '只有子任务全部完成但验收 blocked 的里程碑可以重试');
+      }
+      milestone.status = 'pending';
+      state.completion = { status: 'pending' };
+    });
+    if (!updated) return this.json(404, { error: '尚未创建蓝图' });
+    return this.json(200, buildStatus(updated));
+  }
+
+  private async mutateState(
+    mutate: (state: StoreState) => void | Promise<void>,
+  ): Promise<StoreState | null> {
+    if (this.loop) return this.loop.updateState(mutate);
+    const state = await this.store.load();
+    if (!state) return null;
+    await mutate(state);
+    await this.store.save(state);
+    return state;
   }
 
   private methodNotAllowed(allowed: string): HttpResponse {
@@ -372,5 +653,13 @@ export class HttpApi {
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body,
     };
+  }
+}
+
+function decodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new HttpError(400, '路径参数不是合法的 URL 编码');
   }
 }

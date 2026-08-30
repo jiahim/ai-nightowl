@@ -26,9 +26,12 @@ export class PlanState {
     return this.blueprint.milestones.find((m) => m.id === id);
   }
 
-  /** 子任务是否可启动：自身未 done，且所有依赖已 done */
+  /**
+   * 子任务是否可启动：只有 pending 可启动，且所有依赖已 done。
+   * blocked 必须显式 retry；in-progress 由运行时在崩溃恢复时处理。
+   */
   isRunnable(subtask: Subtask): boolean {
-    if (subtask.status === 'done') return false;
+    if (subtask.status !== 'pending') return false;
     return subtask.dependencies.every((depId) => {
       const dep = this.getSubtask(depId);
       return dep !== undefined && dep.status === 'done';
@@ -49,7 +52,8 @@ export class PlanState {
     const m = this.getMilestone(milestoneId);
     if (!m) return 'pending';
     const statuses = m.subtasks.map((s) => s.status);
-    if (statuses.every((s) => s === 'done')) m.status = 'done';
+    if (statuses.length === 0) m.status = 'blocked';
+    else if (statuses.every((s) => s === 'done')) m.status = 'done';
     else if (statuses.some((s) => s === 'blocked')) m.status = 'blocked';
     else if (statuses.some((s) => s === 'in-progress' || s === 'done')) m.status = 'in-progress';
     else m.status = 'pending';

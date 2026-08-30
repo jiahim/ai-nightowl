@@ -21,6 +21,8 @@ export interface SubtaskDraft {
   dependencies: string[];
   /** 完成判定方式，默认 llm */
   verdictKind: VerdictKind;
+  /** check 判定标识；verdictKind=check 时必填。 */
+  check?: string;
   /** 判定标准（可选） */
   criteria: string[];
 }
@@ -94,7 +96,7 @@ export function assembleBlueprint(id: string, draft: BlueprintDraft): Blueprint 
       name: sd.name,
       detail: sd.detail,
       dependencies: [] as string[], // 下面统一解析
-      verdict: { kind: sd.verdictKind, criteria: sd.criteria },
+      verdict: { kind: sd.verdictKind, check: sd.check, criteria: sd.criteria },
       status: 'pending' as const,
       evidence: [],
     }));
