@@ -1,7 +1,7 @@
 {
   "name": "ai-nightowl",
   "version": "0.2.0",
-  "description": "ai-nightowl —— 自驱动的夜间任务编排引擎（night owl: off-peak task orchestrator），DeepSeek/智谱双平台自动故障转移，按时段折扣记账",
+  "description": "ai-nightowl —— 成本与额度感知的自驱动任务编排引擎，支持 DeepSeek、智谱、MiniMax、OpenAI 与 OpenAI 兼容接口",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "main": "dist/index.js",
@@ -23,6 +23,7 @@
     "docs/blueprint.md",
     "docs/PRD.md",
     "docs/plugin-development.md",
+    "docs/provider-policies.md",
     "README.md",
     "LICENSE"
   ],
@@ -49,6 +50,8 @@
     "deepseek",
     "zhipu",
     "glm",
+    "minimax",
+    "openai",
     "llm",
     "off-peak",
     "task-planning"

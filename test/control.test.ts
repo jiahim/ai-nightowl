@@ -208,9 +208,15 @@ test('Web Console 资源由同源服务提供且不含内联脚本', () => {
   assert.match(html?.body ?? '', /ai-nightowl/);
   assert.match(html?.body ?? '', /<script src="\/app\.js" defer><\/script>/);
   assert.ok(!/<script>/.test(html?.body ?? ''));
+  assert.match(html?.body ?? '', /id="provider-dialog"/);
+  assert.match(html?.body ?? '', /id="minimax-plan-key"/);
+  assert.match(html?.body ?? '', /id="openai-key"/);
+  assert.match(html?.body ?? '', /id="custom-openai-base-url"/);
   assert.match(js?.contentType ?? '', /javascript/);
   assert.match(js?.body ?? '', /\/completion\/retry/);
+  assert.match(js?.body ?? '', /\/settings\/providers/);
   assert.match(css?.body ?? '', /@media/);
+  assert.match(css?.body ?? '', /\.provider-config-grid/);
 });
 
 test('控制 API 把非法 URL 路径参数映射为 400', async (t) => {

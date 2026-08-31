@@ -25,6 +25,9 @@ src/**/*.bak
 .env.*.local
 .envrc
 *.pem
+.provider-secrets.json
+.provider-policies.json
+.provider-usage.json
 
 # Logs
 *.log

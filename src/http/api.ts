@@ -12,6 +12,16 @@ import { LoopBusyError, type NightOwlLoop } from '../runtime/loop.js';
 import type { CostTracker } from '../cost/tracker.js';
 import { RunController, RuntimeBusyError } from '../runtime/controller.js';
 import type { PluginRegistry } from '../plugins/registry.js';
+import {
+  MANAGED_PROVIDER_DEFINITIONS,
+  ProviderSettingsStore,
+  type BuiltInProviderId,
+  type CustomOpenAISettings,
+  type PreferredProvider,
+  type ProviderSettingsUpdate,
+} from '../config/provider-settings.js';
+import { ProviderPoliciesStore, type ProviderPoliciesUpdate } from '../config/provider-policies.js';
+import type { ProviderManagementService } from '../providers/management.js';
 
 /**
  * HTTP API（m4-http）。
@@ -98,6 +108,12 @@ export interface HttpApiOptions {
   controller?: RunController;
   /** 可选：可信本地插件目录；注入后开放 GET /plugins。 */
   plugins?: PluginRegistry;
+  /** 本地 Provider 密钥与首选平台设置；注入后开放 /settings/providers。 */
+  providerSettings?: ProviderSettingsStore;
+  /** Provider 资费覆盖；与 providerManagement 一起提供通用规则设置。 */
+  providerPolicies?: ProviderPoliciesStore;
+  /** 自动发现、配额评估、智能推荐与运行时路由。 */
+  providerManagement?: ProviderManagementService;
 }
 
 /** 带状态码的业务错误（入参非法 → 400；能力缺失 → 501） */
@@ -306,6 +322,9 @@ export class HttpApi {
   private readonly tracker?: CostTracker;
   private readonly controller?: RunController;
   private readonly plugins?: PluginRegistry;
+  private readonly providerSettings?: ProviderSettingsStore;
+  private readonly providerPolicies?: ProviderPoliciesStore;
+  private readonly providerManagement?: ProviderManagementService;
   /** 兼容的同步 /run 与单步 /tick 共享一个前台执行租约。 */
   private foregroundActive = false;
 
@@ -315,6 +334,9 @@ export class HttpApi {
     this.tracker = options.tracker;
     this.controller = options.controller;
     this.plugins = options.plugins;
+    this.providerSettings = options.providerSettings;
+    this.providerPolicies = options.providerPolicies;
+    this.providerManagement = options.providerManagement;
   }
 
   /** 统一入口：路由 + 错误兜底（业务错误按 status，未知错误 500） */
@@ -377,6 +399,23 @@ export class HttpApi {
           providers: [],
         });
 
+      case '/settings/providers':
+        if (!this.providerSettings) throw new HttpError(501, '未注入 Provider 设置仓储');
+        if (method === 'GET') {
+          await this.providerManagement?.refreshRemoteUsage();
+          return this.json(200, this.providerSnapshot());
+        }
+        if (method === 'PUT') return this.updateProviderSettings(body);
+        return this.methodNotAllowed('GET, PUT');
+
+      case '/settings/providers/recommend':
+        if (method !== 'POST') return this.methodNotAllowed('POST');
+        return this.recommendProvider(body);
+
+      case '/settings/providers/apply':
+        if (method !== 'POST') return this.methodNotAllowed('POST');
+        return this.applyProviderRecommendation(body);
+
       case '/capabilities':
         if (method !== 'GET') return this.methodNotAllowed('GET');
         return this.json(200, {
@@ -423,6 +462,176 @@ export class HttpApi {
     }
     await this.freshSave(bp);
     return this.json(201, { created: true, blueprint: bp });
+  }
+
+  private async updateProviderSettings(body: unknown): Promise<HttpResponse> {
+    if (!this.providerSettings) throw new HttpError(501, '未注入 Provider 设置仓储');
+    const input = asObject(body);
+    const update: ProviderSettingsUpdate = {};
+    const policyUpdate: ProviderPoliciesUpdate = {};
+    let changed = false;
+    let providerSettingsChanged = false;
+    let providerPoliciesChanged = false;
+
+    if (input.preferredProvider !== undefined) {
+      const allowed = [
+        'auto',
+        ...(this.providerManagement?.providerIds() ?? MANAGED_PROVIDER_DEFINITIONS.map((provider) => provider.id)),
+      ];
+      if (!allowed.includes(String(input.preferredProvider))) {
+        throw new HttpError(400, `preferredProvider 必须是 ${allowed.join('、')}`);
+      }
+      update.preferredProvider = input.preferredProvider as PreferredProvider;
+      changed = true;
+      providerSettingsChanged = true;
+    }
+
+    if (input.apiKeys !== undefined) {
+      const rawKeys = asObject(input.apiKeys);
+      const managedIds = MANAGED_PROVIDER_DEFINITIONS.map((provider) => provider.id);
+      const unknown = Object.keys(rawKeys).filter((key) => !managedIds.includes(key as BuiltInProviderId));
+      if (unknown.length > 0) throw new HttpError(400, 'apiKeys 包含未知 Provider');
+      const apiKeys: ProviderSettingsUpdate['apiKeys'] = {};
+      for (const providerId of managedIds) {
+        if (rawKeys[providerId] === undefined) continue;
+        if (typeof rawKeys[providerId] !== 'string') throw new HttpError(400, 'API Key 必须是字符串');
+        const key = rawKeys[providerId].trim();
+        if (!key) throw new HttpError(400, 'API Key 不能为空；不修改时请省略该字段');
+        if (key.length > 4096) throw new HttpError(400, 'API Key 长度超出限制');
+        apiKeys[providerId] = key;
+        changed = true;
+        providerSettingsChanged = true;
+      }
+      update.apiKeys = apiKeys;
+    }
+
+    if (input.clear !== undefined) {
+      if (!Array.isArray(input.clear)) throw new HttpError(400, 'clear 必须是 Provider id 数组');
+      const clear: BuiltInProviderId[] = [];
+      for (const providerId of input.clear) {
+        if (!MANAGED_PROVIDER_DEFINITIONS.some((provider) => provider.id === providerId)) {
+          throw new HttpError(400, 'clear 包含未知 Provider');
+        }
+        if (!clear.includes(providerId as BuiltInProviderId)) clear.push(providerId as BuiltInProviderId);
+      }
+      update.clear = clear;
+      changed ||= clear.length > 0;
+      providerSettingsChanged ||= clear.length > 0;
+    }
+
+    if (input.customOpenAI !== undefined) {
+      update.customOpenAI = input.customOpenAI as CustomOpenAISettings;
+      changed = true;
+      providerSettingsChanged = true;
+    }
+
+    if (input.priority !== undefined) {
+      if (!this.providerPolicies) throw new HttpError(501, '未注入 Provider 资费设置仓储');
+      if (!['cost', 'balanced', 'speed', 'quality'].includes(String(input.priority))) {
+        throw new HttpError(400, 'priority 必须是 cost、balanced、speed 或 quality');
+      }
+      policyUpdate.priority = input.priority as ProviderPoliciesUpdate['priority'];
+      changed = true;
+      providerPoliciesChanged = true;
+    }
+
+    if (input.profiles !== undefined) {
+      if (!this.providerPolicies || !this.providerManagement) throw new HttpError(501, 'Provider 资费配置不可用');
+      if (!input.profiles || typeof input.profiles !== 'object' || Array.isArray(input.profiles)) {
+        throw new HttpError(400, 'profiles 必须是 Provider id 到资费画像的对象');
+      }
+      const profiles = asObject(input.profiles);
+      const unknown = Object.keys(profiles).filter((id) => !this.providerManagement!.providerIds().includes(id));
+      if (unknown.length > 0) throw new HttpError(400, `profiles 包含未知 Provider：${unknown.join('、')}`);
+      policyUpdate.profiles = profiles;
+      changed = true;
+      providerPoliciesChanged = true;
+    }
+
+    if (input.clearProfiles !== undefined) {
+      if (!this.providerPolicies || !this.providerManagement) throw new HttpError(501, 'Provider 资费配置不可用');
+      if (!Array.isArray(input.clearProfiles)) throw new HttpError(400, 'clearProfiles 必须是 Provider id 数组');
+      const clearProfiles = input.clearProfiles.map(String);
+      const unknown = clearProfiles.filter((id) => !this.providerManagement!.providerIds().includes(id));
+      if (unknown.length > 0) throw new HttpError(400, `clearProfiles 包含未知 Provider：${unknown.join('、')}`);
+      policyUpdate.clearProfiles = [...new Set(clearProfiles)];
+      changed ||= clearProfiles.length > 0;
+      providerPoliciesChanged ||= clearProfiles.length > 0;
+    }
+
+    if (!changed) throw new HttpError(400, '没有可保存的 Provider 设置');
+    // 先完整校验两个文件的候选状态，避免前半部分已落盘后才因后半部分非法返回 400。
+    try {
+      if (providerSettingsChanged) this.providerSettings.validateUpdate(update);
+      if (providerPoliciesChanged) this.providerPolicies!.validateUpdate(policyUpdate);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : 'Provider 设置非法');
+    }
+    if (providerSettingsChanged) {
+      try {
+        await this.providerSettings.update(update);
+      } catch (error) {
+        throw new HttpError(400, error instanceof Error ? error.message : 'Provider 设置非法');
+      }
+    }
+    if (providerPoliciesChanged) {
+      try {
+        await this.providerPolicies!.update(policyUpdate);
+      } catch (error) {
+        throw new HttpError(400, error instanceof Error ? error.message : 'Provider 资费设置非法');
+      }
+    }
+    await this.providerManagement?.refreshRemoteUsage(undefined, true);
+    return this.json(200, this.providerSnapshot());
+  }
+
+  private async recommendProvider(body: unknown): Promise<HttpResponse> {
+    if (!this.providerManagement) throw new HttpError(501, '智能 Provider 匹配不可用');
+    const input = asObject(body);
+    if (typeof input.request !== 'string' || !input.request.trim()) {
+      throw new HttpError(400, 'request 必须是非空字符串');
+    }
+    try {
+      return this.json(200, await this.providerManagement.recommend(input.request));
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : '无法分析 Provider 需求');
+    }
+  }
+
+  private async applyProviderRecommendation(body: unknown): Promise<HttpResponse> {
+    if (!this.providerManagement || !this.providerPolicies || !this.providerSettings) {
+      throw new HttpError(501, 'Provider 决策应用不可用');
+    }
+    const input = asObject(body);
+    if (typeof input.recommendationId !== 'string' || !input.recommendationId.trim()) {
+      throw new HttpError(400, '缺少 recommendationId，请重新分析');
+    }
+    if (typeof input.optionId !== 'string') throw new HttpError(400, '缺少 optionId');
+    let option: { providerId: string; model: string; priority: 'cost' | 'balanced' | 'speed' | 'quality' };
+    try {
+      option = await this.providerManagement.revalidateRecommendation(
+        input.recommendationId.trim(),
+        input.optionId,
+      );
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : '推荐候选已失效，请重新分析');
+    }
+    await this.providerSettings.update({
+      preferredProvider: option.providerId,
+      preferredModel: { providerId: option.providerId, model: option.model },
+    });
+    await this.providerPolicies.update({ priority: option.priority });
+    await this.providerManagement.refreshRemoteUsage(option.providerId, true);
+    return this.json(200, {
+      applied: true,
+      providerId: option.providerId,
+      model: option.model,
+      settings: this.providerSnapshot(),
+    });
+  }
+
+  private providerSnapshot(): unknown {
+    return this.providerManagement?.snapshot() ?? this.providerSettings?.snapshot();
   }
 
   private async submitRaw(body: unknown): Promise<HttpResponse> {

@@ -1,5 +1,4 @@
 import type { ProviderAdapter } from '../providers/adapter.js';
-import { minutesInBeijing, parseHHMM } from '../time.js';
 
 /**
  * 时间段调度：判断当前是否在低价窗口、算距离下一个窗口多久。
@@ -31,22 +30,19 @@ export class Scheduler {
     return best;
   }
 
-  /** 距离下一个空闲时段还有多久（毫秒）；已在空闲时返回 0；无时段折扣的 provider 返回 null */
+  /**
+   * 距离下一个优惠窗口还有多久。按未来八天的分钟粒度探测，因而同时支持
+   * 跨午夜、任意时区、工作日/非工作日和人工节假日覆盖；没有优惠返回 null。
+   */
   msUntilNextOffPeak(now: Date = new Date()): number | null {
-    const nowMin = minutesInBeijing(now); // 北京时间
-    let nearest: number | null = null;
-    for (const p of this.providers) {
-      const peaks = p.config.costStrategy.peakWindows;
-      if (!peaks || peaks.length === 0) continue;
-      if (p.isOffPeak(now)) return 0; // 已在空闲，现在就能跑
-      // 当前在高峰，找最近的高峰结束时刻（即空闲开始）
-      for (const w of peaks) {
-        const endMin = parseHHMM(w.end);
-        const delta = (endMin - nowMin + 24 * 60) % (24 * 60);
-        const ms = delta * 60 * 1000;
-        if (nearest === null || ms < nearest) nearest = ms;
+    if (this.providers.some((provider) => provider.isOffPeak(now))) return 0;
+    const maxMinutes = 8 * 24 * 60;
+    for (let minute = 1; minute <= maxMinutes; minute += 1) {
+      const candidate = new Date(now.getTime() + minute * 60_000);
+      if (this.providers.some((provider) => provider.isOffPeak(candidate))) {
+        return minute * 60_000;
       }
     }
-    return nearest;
+    return null;
   }
 }
