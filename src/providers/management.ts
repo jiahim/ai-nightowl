@@ -68,6 +68,11 @@ export interface ProviderManagementSnapshot {
     policy: ProviderPolicy;
     currentPricing: PricingQuote[];
     usageLimits: ReturnType<typeof usageLimitStatuses>;
+    usageAccounting: {
+      status: 'ready' | 'pending';
+      pendingEvents: number;
+      warning?: string;
+    };
     remoteUsage?: ProviderRemoteUsage;
   }>;
   persistence: 'local-file';
@@ -90,6 +95,8 @@ export interface ProviderReservationRequest {
   maxTokens?: number;
   now?: Date;
 }
+
+const ACCOUNTING_PENDING_WARNING = '用量账本待落盘，已暂停该 Provider';
 
 /**
  * Provider 的统一决策层：目录自发现、人工覆盖、周期额度、智能匹配和实际记账
@@ -276,10 +283,11 @@ export class ProviderManagementService {
     const credentials = new Map<string, (typeof credentialSnapshot.providers)[number]>(
       credentialSnapshot.providers.map((provider) => [provider.id, provider]),
     );
-    const events = this.usage.events();
+    const events = [...this.usage.events(), ...this.reservations.values()];
     const providers = this.adapters.map((adapter) => {
       const credential = credentials.get(adapter.id);
       const profile = this.profile(adapter.id);
+      const pendingEvents = this.pendingUsageCount(adapter.id);
       return {
         id: adapter.id,
         name: adapter.config.name,
@@ -294,6 +302,11 @@ export class ProviderManagementService {
         currentPricing: adapter.config.models.map((model) =>
           evaluatePricing(adapter.id, model, profile.policy, now, profile.source)),
         usageLimits: usageLimitStatuses(profile.policy, adapter.id, events, now),
+        usageAccounting: {
+          status: pendingEvents > 0 ? 'pending' as const : 'ready' as const,
+          pendingEvents,
+          ...(pendingEvents > 0 ? { warning: ACCOUNTING_PENDING_WARNING } : {}),
+        },
         remoteUsage: this.remoteUsage.get(adapter.id),
       };
     });
@@ -428,7 +441,9 @@ export class ProviderManagementService {
       const available = this.available(adapter);
       const remoteUsage = this.remoteUsage.get(adapter.id);
       const remoteExhausted = remoteUsage?.windows.some((window) => window.status === 'exhausted') ?? false;
-      const fits = estimateFitsLimits(limits, estimate, estimatedCost) && !remoteExhausted;
+      const fitsLocalLimits = estimateFitsLimits(limits, estimate, estimatedCost);
+      const accountingPending = this.hasPendingUsage(adapter.id);
+      const eligible = available && fitsLocalLimits && !remoteExhausted && !accountingPending;
       const warnings = limits.filter((limit) => limit.warning).map((limit) =>
         `${limit.label}已使用 ${(limit.ratio * 100).toFixed(0)}%`);
       for (const window of remoteUsage?.windows ?? []) {
@@ -444,7 +459,8 @@ export class ProviderManagementService {
       ];
       if (remoteUsage?.windows.length) reasons.push('已核验 Provider 官方套餐额度');
       if (!available) warnings.push('尚未配置凭据或 Provider 不可用');
-      if (!fits) warnings.push('本次预计用量会超过周期限制');
+      if (!fitsLocalLimits) warnings.push('本次预计用量会超过周期限制');
+      if (accountingPending) warnings.push(ACCOUNTING_PENDING_WARNING);
       const score = candidateScore(priority, model, quote, estimatedCost, index);
       return {
         adapter,
@@ -453,7 +469,7 @@ export class ProviderManagementService {
           providerId: adapter.id,
           providerName: adapter.config.name,
           model: model.name,
-          eligible: available && fits,
+          eligible,
           estimatedCost,
           currentRate: quote,
           usageLimits: limits,
@@ -557,10 +573,15 @@ export class ProviderManagementService {
   }
 
   private hasPendingUsage(providerId: string): boolean {
+    return this.pendingUsageCount(providerId) > 0;
+  }
+
+  private pendingUsageCount(providerId: string): number {
+    let count = 0;
     for (const id of this.pendingReservations) {
-      if (this.reservations.get(id)?.providerId === providerId) return true;
+      if (this.reservations.get(id)?.providerId === providerId) count += 1;
     }
-    return false;
+    return count;
   }
 
   private serializeAdmission<T>(work: () => Promise<T>): Promise<T> {

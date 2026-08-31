@@ -224,7 +224,7 @@ test('并发调用会先预留额度，不会同时越过最后一次请求限�
   assert.equal(usage.events().length, 1);
 });
 
-test('成功调用的账本落盘失败时保留额度占用并阻止继续超额', async (t) => {
+test('成功调用的账本落盘失败时保留额度占用并在恢复前暂停 Provider', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-ledger-failure-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   let calls = 0;
@@ -239,7 +239,7 @@ test('成功调用的账本落盘失败时保留额度占用并阻止继续超�
   const settings = new ProviderSettingsStore(dir, { env: { DEEPSEEK_API_KEY: 'd' } });
   const policies = new ProviderPoliciesStore(dir);
   await policies.update({ profiles: { deepseek: policy({
-    usageLimits: [{ id: 'daily-request', label: '每日调用', period: 'day', unit: 'requests', limit: 1 }],
+    usageLimits: [{ id: 'daily-request', label: '每日调用', period: 'day', unit: 'requests', limit: 2 }],
   }) } });
   const usage = new ProviderUsageLedger(dir);
   const persistUsage = usage.record.bind(usage);
@@ -259,10 +259,25 @@ test('成功调用的账本落盘失败时保留额度占用并阻止继续超�
     reserveCall: (context) => management.reserveCall(context),
     completeReservation: (id, event) => management.completeReservation(id, event),
   });
+  const initialRecommendation = await management.recommend('优先省钱');
 
   await live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'first' }]);
   assert.equal(calls, 1);
   assert.equal(usage.events().length, 0);
+  const pendingProvider = management.snapshot().providers[0];
+  assert.equal(pendingProvider.usageLimits[0].used, 1);
+  assert.equal(pendingProvider.usageAccounting.status, 'pending');
+  assert.equal(pendingProvider.usageAccounting.pendingEvents, 1);
+  const pendingRecommendation = await management.recommend('优先省钱');
+  assert.equal(pendingRecommendation.candidates[0].eligible, false);
+  assert.match(pendingRecommendation.candidates[0].warnings.join('；'), /账本.*落盘/);
+  await assert.rejects(
+    management.revalidateRecommendation(
+      initialRecommendation.recommendationId,
+      initialRecommendation.candidates[0].optionId,
+    ),
+    /账本.*落盘/,
+  );
   await assert.rejects(
     live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'must not run' }]),
     /没有满足凭据、预算与周期额度约束的 Provider/,
@@ -270,12 +285,10 @@ test('成功调用的账本落盘失败时保留额度占用并阻止继续超�
   assert.equal(calls, 1);
 
   ledgerAvailable = true;
-  await assert.rejects(
-    live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'still exhausted' }]),
-    /没有满足凭据、预算与周期额度约束的 Provider/,
-  );
-  assert.equal(calls, 1);
-  assert.equal(usage.events().length, 1);
+  await live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'after recovery' }]);
+  assert.equal(calls, 2);
+  assert.equal(usage.events().length, 2);
+  assert.equal(management.snapshot().providers[0].usageAccounting.status, 'ready');
 });
 
 test('设置 API 可保存画像、给出可解释候选并一键应用', async (t) => {

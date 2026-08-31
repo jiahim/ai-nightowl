@@ -565,7 +565,8 @@ function clientApp(): void {
       window.status === 'unlimited' ? `${window.label} 不限量` :
         window.remainingPercent === undefined ? `${window.label} 未知` : `${window.label}剩余 ${Number(window.remainingPercent).toFixed(0)}%`).join(' · ');
     const remoteWarning = provider.remoteUsage?.warning ? ` · ${provider.remoteUsage.warning}` : '';
-    target.textContent = `${source} · ${quotes[0] ? priceText(quotes[0]) : '未声明价格'}${quota ? ` · ${quota}` : ''}${remoteQuota ? ` · 官方：${remoteQuota}` : ''}${remoteWarning}`;
+    const accountingWarning = provider.usageAccounting?.warning ? ` · ${provider.usageAccounting.warning}` : '';
+    target.textContent = `${source} · ${quotes[0] ? priceText(quotes[0]) : '未声明价格'}${quota ? ` · ${quota}` : ''}${remoteQuota ? ` · 官方：${remoteQuota}` : ''}${remoteWarning}${accountingWarning}`;
   };
 
   const fillPolicyEditor = (providerId?: string): void => {
@@ -615,17 +616,21 @@ function clientApp(): void {
     populateProviderSelectors(settings);
     for (const providerId of managedProviderIds) {
       const provider = (settings.providers ?? []).find((item: Json) => item.id === providerId) ?? {};
+      const accountingPending = provider.usageAccounting?.status === 'pending';
       const status = byId(`${providerId}-status`);
-      status.textContent = provider.configured ? '已配置' : '未配置';
-      status.className = `provider-status${provider.configured ? ' configured' : ''}`;
+      status.textContent = accountingPending ? '账本待落盘' : provider.configured ? '已配置' : '未配置';
+      status.className = `provider-status${provider.configured && !accountingPending ? ' configured' : ''}`;
       const source = byId(`${providerId}-source`);
-      source.textContent = provider.source === 'local'
+      const credentialSource = provider.source === 'local'
         ? '已安全保存在本机'
         : provider.source === 'environment'
           ? '由启动环境变量提供'
           : providerId === 'openai-compatible' && provider.configuration?.apiKeyRequired === false
             ? '接口配置为无需密钥'
           : '尚未提供密钥';
+      source.textContent = accountingPending
+        ? `${credentialSource} · ${provider.usageAccounting.warning}`
+        : credentialSource;
       const input = byId(`${providerId}-key`) as HTMLInputElement;
       input.value = '';
       input.placeholder = provider.configured ? '输入新密钥可替换；留空保持不变' : '粘贴 API Key';
@@ -905,7 +910,12 @@ function clientApp(): void {
       const meta = make('div', 'plugin-provider-meta');
       meta.append(make('small', '', provider.source === 'core' ? '内建' : provider.pluginId));
       if (providerSetting) {
-        meta.append(make('small', `provider-state${providerSetting.configured ? ' configured' : ''}`, providerSetting.configured ? '可用' : '待配置'));
+        const accountingPending = providerSetting.usageAccounting?.status === 'pending';
+        meta.append(make(
+          'small',
+          `provider-state${providerSetting.configured && !accountingPending ? ' configured' : ''}`,
+          accountingPending ? '账本待落盘' : providerSetting.configured ? '可用' : '待配置',
+        ));
       }
       top.append(make('b', '', provider.name), meta);
       item.append(top, make('div', 'plugin-models', (provider.models ?? []).join(' · ') || '未声明模型'));
