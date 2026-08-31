@@ -33,15 +33,22 @@ export interface CustomOpenAISettings {
   models: ModelSpec[];
 }
 
+export interface PreferredModelSelection {
+  providerId: string;
+  model: string;
+}
+
 interface PersistedProviderSettings {
   version: typeof PROVIDER_SETTINGS_VERSION;
   preferredProvider: PreferredProvider;
+  preferredModel: PreferredModelSelection | null;
   apiKeys: Partial<Record<BuiltInProviderId, string>>;
   customOpenAI: CustomOpenAISettings;
 }
 
 export interface ProviderSettingsUpdate {
   preferredProvider?: PreferredProvider;
+  preferredModel?: PreferredModelSelection | null;
   apiKeys?: Partial<Record<BuiltInProviderId, string>>;
   clear?: BuiltInProviderId[];
   customOpenAI?: CustomOpenAISettings;
@@ -49,6 +56,7 @@ export interface ProviderSettingsUpdate {
 
 export interface ProviderSettingsSnapshot {
   preferredProvider: PreferredProvider;
+  preferredModel: PreferredModelSelection | null;
   effectiveProvider: string | null;
   providers: Array<{
     id: BuiltInProviderId;
@@ -94,6 +102,7 @@ function emptySettings(): PersistedProviderSettings {
   return {
     version: PROVIDER_SETTINGS_VERSION,
     preferredProvider: 'auto',
+    preferredModel: null,
     apiKeys: {},
     customOpenAI: defaultCustomOpenAI(),
   };
@@ -115,6 +124,7 @@ export class ProviderSettingsStore {
     preferredProvider?: string;
   };
   private settings: PersistedProviderSettings;
+  private writeTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dir: string,
@@ -153,6 +163,12 @@ export class ProviderSettingsStore {
     return this.inherited.preferredProvider;
   }
 
+  preferredModel(providerId: string): string | undefined {
+    return this.settings.preferredModel?.providerId === providerId
+      ? this.settings.preferredModel.model
+      : undefined;
+  }
+
   customOpenAI(): CustomOpenAISettings {
     return structuredClone(this.settings.customOpenAI);
   }
@@ -183,6 +199,7 @@ export class ProviderSettingsStore {
       ?? null;
     return {
       preferredProvider: this.settings.preferredProvider,
+      preferredModel: this.settings.preferredModel ? { ...this.settings.preferredModel } : null,
       effectiveProvider,
       providers: MANAGED_PROVIDER_DEFINITIONS.map((provider) => ({
         id: provider.id,
@@ -190,11 +207,13 @@ export class ProviderSettingsStore {
         envKey: provider.envKey,
         billingMode: provider.billingMode,
         configured: this.isConfigured(provider.id),
-        source: this.settings.apiKeys[provider.id]
-          ? 'local'
-          : this.inherited.apiKeys[provider.id]
-            ? 'environment'
-            : null,
+        source: provider.id === 'openai-compatible' && !this.settings.customOpenAI.apiKeyRequired
+          ? null
+          : this.settings.apiKeys[provider.id]
+            ? 'local'
+            : this.inherited.apiKeys[provider.id]
+              ? 'environment'
+              : null,
         credentialManaged: true as const,
         ...(provider.id === 'openai-compatible'
           ? { configuration: this.customOpenAI() }
@@ -205,27 +224,47 @@ export class ProviderSettingsStore {
     };
   }
 
+  validateUpdate(update: ProviderSettingsUpdate): void {
+    this.nextSettings(update);
+  }
+
   async update(update: ProviderSettingsUpdate): Promise<ProviderSettingsSnapshot> {
+    return this.serialize(async () => {
+      const next = this.nextSettings(update);
+      await this.persist(next);
+      this.settings = next;
+      this.applyRuntimeEnvironment();
+      return this.snapshot();
+    });
+  }
+
+  private nextSettings(update: ProviderSettingsUpdate): PersistedProviderSettings {
+    const next = structuredClone(this.settings);
     if (update.preferredProvider !== undefined) {
       if (update.preferredProvider !== 'auto' && !PROVIDER_ID_PATTERN.test(update.preferredProvider)) {
         throw new ProviderSettingsError('preferredProvider 非法');
       }
-      this.settings.preferredProvider = update.preferredProvider;
+      next.preferredProvider = update.preferredProvider;
+      if (update.preferredModel === undefined) next.preferredModel = null;
+    }
+    if (update.preferredModel !== undefined) {
+      next.preferredModel = update.preferredModel === null
+        ? null
+        : validatePreferredModel(update.preferredModel);
     }
     for (const providerId of update.clear ?? []) {
       if (!PROVIDER_BY_ID.has(providerId)) throw new ProviderSettingsError(`未知 Provider：${providerId}`);
-      delete this.settings.apiKeys[providerId];
+      delete next.apiKeys[providerId];
     }
     for (const provider of MANAGED_PROVIDER_DEFINITIONS) {
       const key = cleanKey(update.apiKeys?.[provider.id]);
-      if (key) this.settings.apiKeys[provider.id] = key;
+      if (key) next.apiKeys[provider.id] = key;
     }
     if (update.customOpenAI !== undefined) {
-      this.settings.customOpenAI = validateCustomOpenAI(update.customOpenAI);
+      next.customOpenAI = validateCustomOpenAI(update.customOpenAI);
+      if (!next.customOpenAI.apiKeyRequired) delete next.apiKeys['openai-compatible'];
     }
-    await this.persist();
-    this.applyRuntimeEnvironment();
-    return this.snapshot();
+    return next;
   }
 
   private loadSync(): PersistedProviderSettings {
@@ -258,9 +297,13 @@ export class ProviderSettingsStore {
       const customOpenAI = parsed.version === 1 || parsed.customOpenAI === undefined
         ? defaultCustomOpenAI()
         : validateCustomOpenAI(parsed.customOpenAI);
+      const preferredModel = parsed.preferredModel === undefined || parsed.preferredModel === null
+        ? null
+        : validatePreferredModel(parsed.preferredModel);
       return {
         version: PROVIDER_SETTINGS_VERSION,
         preferredProvider: preferredProvider as PreferredProvider,
+        preferredModel,
         apiKeys,
         customOpenAI,
       };
@@ -271,7 +314,9 @@ export class ProviderSettingsStore {
 
   private applyRuntimeEnvironment(): void {
     for (const provider of MANAGED_PROVIDER_DEFINITIONS) {
-      const effective = this.settings.apiKeys[provider.id] ?? this.inherited.apiKeys[provider.id];
+      const effective = provider.id === 'openai-compatible' && !this.settings.customOpenAI.apiKeyRequired
+        ? undefined
+        : this.settings.apiKeys[provider.id] ?? this.inherited.apiKeys[provider.id];
       if (effective) this.env[provider.envKey] = effective;
       else delete this.env[provider.envKey];
     }
@@ -280,11 +325,11 @@ export class ProviderSettingsStore {
     else delete this.env.NIGHTOWL_PROVIDER;
   }
 
-  private async persist(): Promise<void> {
+  private async persist(settings: PersistedProviderSettings): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     const temp = join(this.dir, `.provider-secrets.${process.pid}.${randomUUID()}.tmp`);
     try {
-      await writeFile(temp, JSON.stringify(this.settings, null, 2), {
+      await writeFile(temp, JSON.stringify(settings, null, 2), {
         encoding: 'utf-8',
         mode: 0o600,
         flag: 'wx',
@@ -295,6 +340,24 @@ export class ProviderSettingsStore {
       throw new ProviderSettingsError('无法保存本地 Provider 设置', error);
     }
   }
+
+  private serialize<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.writeTail.then(work, work);
+    this.writeTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
+function validatePreferredModel(value: unknown): PreferredModelSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProviderSettingsError('preferredModel 必须是对象或 null');
+  }
+  const raw = value as Partial<PreferredModelSelection>;
+  const providerId = typeof raw.providerId === 'string' ? raw.providerId.trim() : '';
+  const model = typeof raw.model === 'string' ? raw.model.trim() : '';
+  if (!PROVIDER_ID_PATTERN.test(providerId)) throw new ProviderSettingsError('preferredModel.providerId 非法');
+  if (!model || model.length > 200) throw new ProviderSettingsError('preferredModel.model 非法');
+  return { providerId, model };
 }
 
 function validateCustomOpenAI(value: unknown): CustomOpenAISettings {

@@ -50,7 +50,6 @@ Thumbs.db
 
 # Node / TS
 node_modules/
-.worktrees/
 lerna-debug.log
 .pnpm-debug.log
 

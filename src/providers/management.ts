@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ProviderPoliciesStore } from '../config/provider-policies.js';
 import type { CustomOpenAISettings, ProviderSettingsStore } from '../config/provider-settings.js';
 import type { ProviderUsageLedger } from '../config/provider-usage.js';
@@ -82,6 +83,14 @@ export interface ProviderCallContext {
   now?: Date;
 }
 
+export interface ProviderReservationRequest {
+  providerId: string;
+  model: string;
+  messages?: Message[];
+  maxTokens?: number;
+  now?: Date;
+}
+
 /**
  * Provider 的统一决策层：目录自发现、人工覆盖、周期额度、智能匹配和实际记账
  * 都在这里收口。LLM 只能解释需求；最终候选仍由确定性价格/额度规则计算。
@@ -91,6 +100,9 @@ export class ProviderManagementService {
   private readonly byId: Map<string, ProviderAdapter>;
   private readonly remoteUsage = new Map<string, ProviderRemoteUsage>();
   private readonly remoteUsageAttemptedAt = new Map<string, number>();
+  private readonly reservations = new Map<string, UsageEvent>();
+  private readonly recommendations = new Map<string, { value: ProviderRecommendation; expiresAt: number }>();
+  private admissionTail: Promise<void> = Promise.resolve();
   private interpreter?: ProviderIntentInterpreter;
 
   constructor(
@@ -190,7 +202,48 @@ export class ProviderManagementService {
   }
 
   async recordUsage(event: UsageEvent): Promise<void> {
-    await this.usage.record(event);
+    await this.serializeAdmission(() => this.usage.record(event));
+  }
+
+  /** 在上游调用前原子预留预计额度，避免并发请求同时越过最后余量。 */
+  reserveCall(request: ProviderReservationRequest): Promise<string | null> {
+    return this.serializeAdmission(async () => {
+      const adapter = this.byId.get(request.providerId);
+      const model = adapter?.config.models.find((item) => item.name === request.model);
+      if (!adapter || !model || !this.available(adapter)) return null;
+      const now = request.now ?? new Date();
+      const estimate = estimateCall(request.messages ?? [], request.maxTokens);
+      const profile = this.profile(adapter.id);
+      const quote = evaluatePricing(adapter.id, model, profile.policy, now, profile.source);
+      const events = [...this.usage.events(), ...this.reservations.values()];
+      const limits = usageLimitStatuses(profile.policy, adapter.id, events, now);
+      const remoteExhausted = this.remoteUsage.get(adapter.id)?.windows
+        .some((window) => window.status === 'exhausted') ?? false;
+      const estimatedCost = estimateQuoteCost(quote, estimate);
+      if (remoteExhausted || !estimateFitsLimits(limits, estimate, estimatedCost)) return null;
+      const id = randomUUID();
+      this.reservations.set(id, {
+        at: now.toISOString(),
+        providerId: adapter.id,
+        model: model.name,
+        promptTokens: estimate.promptTokens,
+        completionTokens: estimate.completionTokens,
+        actualCost: estimatedCost,
+      });
+      return id;
+    });
+  }
+
+  /** 成功时以实际用量替换预留；失败时传空 event 释放预留。 */
+  completeReservation(id: string, event?: UsageEvent): Promise<void> {
+    return this.serializeAdmission(async () => {
+      if (!this.reservations.has(id)) return;
+      try {
+        if (event) await this.usage.record(event);
+      } finally {
+        this.reservations.delete(id);
+      }
+    });
   }
 
   snapshot(now: Date = new Date()): ProviderManagementSnapshot {
@@ -276,8 +329,8 @@ export class ProviderManagementService {
     });
     const eligible = candidates.filter((candidate) => candidate.eligible);
     const recommended = eligible[0] ?? null;
-    return {
-      recommendationId: `rec-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
+    const recommendation: ProviderRecommendation = {
+      recommendationId: `rec-${randomUUID()}`,
       analyzedBy,
       request: clean,
       interpretation: intent,
@@ -288,6 +341,39 @@ export class ProviderManagementService {
         : '当前没有同时满足密钥、额度和预算要求的 Provider。',
       warnings,
     };
+    this.rememberRecommendation(recommendation, now);
+    return recommendation;
+  }
+
+  /** 应用前按最新凭据、价格、额度与原始预算重新计算候选。 */
+  async revalidateRecommendation(
+    recommendationId: string,
+    optionId: string,
+    now: Date = new Date(),
+  ): Promise<{ providerId: string; model: string; priority: ProviderPriority }> {
+    const saved = this.recommendations.get(recommendationId);
+    if (!saved || saved.expiresAt < now.getTime()) {
+      if (saved) this.recommendations.delete(recommendationId);
+      throw new Error('推荐已过期或服务已重启，请重新分析');
+    }
+    const original = saved.value.candidates.find((candidate) => candidate.optionId === optionId);
+    if (!original) throw new Error('推荐候选不存在，请重新分析');
+    await this.refreshRemoteUsage(original.providerId, true);
+    const intent = saved.value.interpretation;
+    const estimate = {
+      promptTokens: intent.expectedPromptTokens,
+      completionTokens: intent.expectedCompletionTokens,
+    };
+    const current = this.rank({ taskKind: intent.taskKind, now }, intent.priority, estimate)
+      .find(({ adapter, model }) => adapter.id === original.providerId && model.name === original.model);
+    if (!current) throw new Error('推荐模型已不再匹配当前路由，请重新分析');
+    const overBudget = intent.maxCost !== undefined && current.candidate.estimatedCost > intent.maxCost;
+    if (!current.candidate.eligible || overBudget) {
+      const detail = [...current.candidate.warnings, ...(overBudget ? ['预计费用已超过原预算'] : [])]
+        .filter(Boolean).join('；');
+      throw new Error(`推荐候选当前不可用${detail ? `：${detail}` : ''}`);
+    }
+    return { providerId: current.adapter.id, model: current.model.name, priority: intent.priority };
   }
 
   candidateExists(optionId: string): { providerId: string; model: string } | null {
@@ -306,7 +392,7 @@ export class ProviderManagementService {
   ): Array<{ adapter: ProviderAdapter; model: ModelSpec; candidate: ProviderCandidate }> {
     const now = context.now ?? new Date();
     const estimate = explicitEstimate ?? estimateCall(context.messages ?? [], context.maxTokens);
-    const events = this.usage.events();
+    const events = [...this.usage.events(), ...this.reservations.values()];
     const kind = context.taskKind ?? this.requestedKind(context.requestedModel, 'execute');
     const ranked = this.adapters.map((adapter, index) => {
       const model = this.modelFor(adapter, kind, context.requestedModel, priority);
@@ -365,8 +451,9 @@ export class ProviderManagementService {
     requestedModel?: string,
     priority: ProviderPriority = this.policies.priority(),
   ): ModelSpec {
-    const exact = requestedModel
-      ? adapter.config.models.find((model) => model.name === requestedModel)
+    const exactName = requestedModel ?? this.settings.preferredModel(adapter.id);
+    const exact = exactName
+      ? adapter.config.models.find((model) => model.name === exactName)
       : undefined;
     if (exact) return exact;
     const requested = requestedModel
@@ -405,6 +492,27 @@ export class ProviderManagementService {
       if (cost < current * 0.99) return { at: at.toISOString(), cost };
     }
     return undefined;
+  }
+
+  private rememberRecommendation(recommendation: ProviderRecommendation, now: Date): void {
+    for (const [id, saved] of this.recommendations) {
+      if (saved.expiresAt < now.getTime()) this.recommendations.delete(id);
+    }
+    this.recommendations.set(recommendation.recommendationId, {
+      value: structuredClone(recommendation),
+      expiresAt: now.getTime() + 15 * 60_000,
+    });
+    while (this.recommendations.size > 100) {
+      const oldest = this.recommendations.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.recommendations.delete(oldest);
+    }
+  }
+
+  private serializeAdmission<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.admissionTail.then(work, work);
+    this.admissionTail = result.then(() => undefined, () => undefined);
+    return result;
   }
 }
 

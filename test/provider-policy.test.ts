@@ -14,6 +14,7 @@ import {
   evaluatePricing,
   inferProviderIntent,
   usageLimitStatuses,
+  validateProviderPolicy,
   type ProviderAdapter,
   type ProviderPolicy,
 } from '../src/index.js';
@@ -82,6 +83,12 @@ test('资费规则支持工作日、非工作日、节假日覆盖与时段优�
   assert.equal(night.label, '夜间价');
   assert.equal(night.discount, 0.25);
   assert.equal(night.offPeak, true);
+});
+
+test('资费画像拒绝不存在的日历日期', () => {
+  assert.throws(() => validateProviderPolicy(policy({
+    nonWorkingDates: ['2026-02-30'],
+  })), /日期/);
 });
 
 test('本地意图识别尊重用户显式优先级', () => {
@@ -176,6 +183,47 @@ test('上游不返回 token usage 时仍记录一次成功请求', async (t) => 
   assert.equal(usage.events()[0].completionTokens, 0);
 });
 
+test('并发调用会先预留额度，不会同时越过最后一次请求限制', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-reservation-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let calls = 0;
+  const base = adapter('deepseek', 1);
+  const provider: ProviderAdapter = {
+    ...base,
+    async chat(target) {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { content: 'ok', model: target, providerId: 'deepseek' };
+    },
+  };
+  const settings = new ProviderSettingsStore(dir, { env: { DEEPSEEK_API_KEY: 'd' } });
+  const policies = new ProviderPoliciesStore(dir);
+  await policies.update({ profiles: { deepseek: policy({
+    usageLimits: [{ id: 'daily-request', label: '每日调用', period: 'day', unit: 'requests', limit: 1 }],
+  }) } });
+  const usage = new ProviderUsageLedger(dir);
+  const management = new ProviderManagementService([provider], settings, policies, usage, () => true);
+  const live = new LiveProviderAdapter([provider], {
+    preferredProvider: () => settings.effectivePreferredProvider(),
+    isAvailable: () => true,
+    routeModel: (kind) => management.routeModel(kind),
+    primaryProvider: (kind) => management.currentProvider(kind),
+    orderForCall: (context) => management.orderForCall(context),
+    quote: (providerId, model, now) => management.quote(providerId, model, now),
+    reserveCall: (context) => management.reserveCall(context),
+    completeReservation: (id, event) => management.completeReservation(id, event),
+  });
+
+  const results = await Promise.allSettled([
+    live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'one' }]),
+    live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'two' }]),
+  ]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result) => result.status === 'rejected').length, 1);
+  assert.equal(calls, 1);
+  assert.equal(usage.events().length, 1);
+});
+
 test('设置 API 可保存画像、给出可解释候选并一键应用', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-api-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -212,10 +260,73 @@ test('设置 API 可保存画像、给出可解释候选并一键应用', async 
 
   const applied = await api.handle({
     method: 'POST', pathname: '/settings/providers/apply',
-    body: { optionId: 'deepseek:deepseek-chat', priority: 'cost' },
+    body: {
+      recommendationId: (recommended.body as any).recommendationId,
+      optionId: 'deepseek:deepseek-chat',
+    },
   });
   assert.equal(applied.status, 200);
   assert.equal(settings.snapshot().preferredProvider, 'deepseek');
+  assert.deepEqual((settings.snapshot() as any).preferredModel, {
+    providerId: 'deepseek', model: 'deepseek-chat',
+  });
+});
+
+test('采用推荐会重新核验当前凭据并拒绝已失效候选', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-stale-recommendation-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const providers = [adapter('deepseek', 1), adapter('zhipu', 8)];
+  const settings = new ProviderSettingsStore(dir, { env: {} });
+  await settings.update({ apiKeys: { deepseek: 'd', zhipu: 'z' } });
+  const policies = new ProviderPoliciesStore(dir);
+  const usage = new ProviderUsageLedger(dir);
+  const management = new ProviderManagementService(
+    providers,
+    settings,
+    policies,
+    usage,
+    (provider) => settings.isConfigured(provider.id as 'deepseek' | 'zhipu'),
+  );
+  const api = new HttpApi({
+    store: new Store(dir), providerSettings: settings, providerPolicies: policies, providerManagement: management,
+  });
+  const recommended = await api.handle({
+    method: 'POST', pathname: '/settings/providers/recommend', body: { request: '优先省钱' },
+  });
+  await settings.update({ clear: ['deepseek'] });
+
+  const applied = await api.handle({
+    method: 'POST', pathname: '/settings/providers/apply', body: {
+      recommendationId: (recommended.body as any).recommendationId,
+      optionId: 'deepseek:deepseek-chat',
+    },
+  });
+  assert.equal(applied.status, 400);
+  assert.equal(settings.snapshot().preferredProvider, 'auto');
+});
+
+test('联合设置中的非法资费不会先保存密钥或首选项', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-atomic-api-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const providers = [adapter('deepseek', 1)];
+  const settings = new ProviderSettingsStore(dir, { env: {} });
+  const policies = new ProviderPoliciesStore(dir);
+  const usage = new ProviderUsageLedger(dir);
+  const management = new ProviderManagementService(providers, settings, policies, usage, () => true);
+  const api = new HttpApi({
+    store: new Store(dir), providerSettings: settings, providerPolicies: policies, providerManagement: management,
+  });
+
+  const response = await api.handle({
+    method: 'PUT', pathname: '/settings/providers', body: {
+      preferredProvider: 'deepseek',
+      apiKeys: { deepseek: 'must-not-save' },
+      profiles: { deepseek: { ...policy(), timezone: 'Not/A-Timezone' } },
+    },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(settings.snapshot().preferredProvider, 'auto');
+  assert.equal(settings.snapshot().providers[0].source, null);
 });
 
 test('智能匹配会查询并跳过官方额度已耗尽的 MiniMax Plan', async (t) => {

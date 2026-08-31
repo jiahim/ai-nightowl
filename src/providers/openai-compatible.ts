@@ -156,7 +156,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   protected resolveApiKey(): string | undefined {
-    return this.options.apiKey?.() ?? process.env[this.config.apiKeyEnv]?.trim();
+    // 注入 resolver 代表调用方拥有完整的密钥决策权；它显式返回 undefined
+    // 时不得再回退环境变量，否则切换到无密钥端点会把旧 Key 带过去。
+    return this.options.apiKey
+      ? this.options.apiKey()?.trim()
+      : process.env[this.config.apiKeyEnv]?.trim();
   }
 }
 

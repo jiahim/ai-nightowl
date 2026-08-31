@@ -62,27 +62,36 @@ export class ProviderPoliciesStore {
     };
   }
 
+  validateUpdate(update: ProviderPoliciesUpdate): void {
+    this.nextState(update);
+  }
+
   update(update: ProviderPoliciesUpdate): Promise<ProviderPoliciesSnapshot> {
     return this.serialize(async () => {
-      const next = structuredClone(this.state);
-      if (update.priority !== undefined) {
-        if (!['cost', 'balanced', 'speed', 'quality'].includes(update.priority)) {
-          throw new ProviderPoliciesError('priority 必须是 cost、balanced、speed 或 quality');
-        }
-        next.priority = update.priority;
-      }
-      for (const providerId of update.clearProfiles ?? []) {
-        assertProviderId(providerId);
-        delete next.profiles[providerId];
-      }
-      for (const [providerId, raw] of Object.entries(update.profiles ?? {})) {
-        assertProviderId(providerId);
-        next.profiles[providerId] = validateProviderPolicy(raw);
-      }
+      const next = this.nextState(update);
       await this.persist(next);
       this.state = next;
       return this.snapshot();
     });
+  }
+
+  private nextState(update: ProviderPoliciesUpdate): PersistedProviderPolicies {
+    const next = structuredClone(this.state);
+    if (update.priority !== undefined) {
+      if (!['cost', 'balanced', 'speed', 'quality'].includes(update.priority)) {
+        throw new ProviderPoliciesError('priority 必须是 cost、balanced、speed 或 quality');
+      }
+      next.priority = update.priority;
+    }
+    for (const providerId of update.clearProfiles ?? []) {
+      assertProviderId(providerId);
+      delete next.profiles[providerId];
+    }
+    for (const [providerId, raw] of Object.entries(update.profiles ?? {})) {
+      assertProviderId(providerId);
+      next.profiles[providerId] = validateProviderPolicy(raw);
+    }
+    return next;
   }
 
   private loadSync(): PersistedProviderPolicies {

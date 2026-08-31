@@ -17,6 +17,14 @@ export interface LiveProviderRouting {
   }): Array<[ProviderAdapter, string]> | Promise<Array<[ProviderAdapter, string]>>;
   quote?(providerId: string, model: string, now: Date): PricingQuote;
   recordUsage?(event: UsageEvent): Promise<void>;
+  reserveCall?(context: {
+    providerId: string;
+    model: string;
+    messages: Message[];
+    maxTokens?: number;
+    now: Date;
+  }): Promise<string | null>;
+  completeReservation?(id: string, event?: UsageEvent): Promise<void>;
 }
 
 /**
@@ -78,6 +86,16 @@ export class LiveProviderAdapter implements ProviderAdapter {
 
     let lastError: unknown;
     for (const [adapter, targetModel] of chain) {
+      const reservationId = this.routing.reserveCall && this.routing.completeReservation
+        ? await this.routing.reserveCall({
+          providerId: adapter.id,
+          model: targetModel,
+          messages,
+          maxTokens: opts?.maxTokens,
+          now: calledAt,
+        })
+        : undefined;
+      if (reservationId === null) continue;
       try {
         const result = await adapter.chat(targetModel, messages, opts);
         const baseSpec = adapter.config.models.find((item) => item.name === result.model)
@@ -99,7 +117,8 @@ export class LiveProviderAdapter implements ProviderAdapter {
           },
         };
         const spec = quote?.model ?? baseSpec;
-        if (spec && this.routing.recordUsage) {
+        let usageEvent: UsageEvent | undefined;
+        if (spec && (this.routing.recordUsage || reservationId)) {
           // 即使兼容端点没有返回 token usage，也要记录成功请求，才能正确执行
           // requests 类型的滚动/日/周/月额度；未知 token 按 0 记，不猜测费用。
           const promptTokens = Math.max(0, result.usage?.promptTokens ?? 0);
@@ -110,17 +129,26 @@ export class LiveProviderAdapter implements ProviderAdapter {
             (completionTokens / 1_000_000) * spec.outputPrice
           ) * discount;
           // 上游调用已经成功，账本写入失败不能触发第二次模型调用。
-          await this.routing.recordUsage({
+          usageEvent = {
             at: pricedAt.toISOString(),
             providerId: adapter.id,
             model: result.model,
             promptTokens,
             completionTokens,
             actualCost,
-          }).catch(() => undefined);
+          };
+        }
+        if (reservationId && this.routing.completeReservation) {
+          // 上游已成功，账本失败不能触发重复模型调用。
+          await this.routing.completeReservation(reservationId, usageEvent).catch(() => undefined);
+        } else if (usageEvent && this.routing.recordUsage) {
+          await this.routing.recordUsage(usageEvent).catch(() => undefined);
         }
         return spec ? { ...result, ...actual, spec } : { ...result, ...actual };
       } catch (error) {
+        if (reservationId && this.routing.completeReservation) {
+          await this.routing.completeReservation(reservationId).catch(() => undefined);
+        }
         lastError = error;
         if (!isRetryableProviderError(error)) throw error;
       }

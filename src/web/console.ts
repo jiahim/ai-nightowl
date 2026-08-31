@@ -794,7 +794,10 @@ function clientApp(): void {
     try {
       const result = await request('/settings/providers/apply', {
         method: 'POST',
-        body: JSON.stringify({ optionId, priority: app.providerRecommendation?.interpretation?.priority }),
+        body: JSON.stringify({
+          recommendationId: app.providerRecommendation?.recommendationId,
+          optionId,
+        }),
       });
       fillProviderSettingsForm(result.settings);
       toast(`已应用 ${result.providerId} / ${result.model}，下一次调用立即使用`);

@@ -58,6 +58,7 @@ export type {
   ProviderIntentInterpreter,
   ProviderManagementSnapshot,
   ProviderCallContext,
+  ProviderReservationRequest,
 } from './providers/management.js';
 export type {
   ProviderAdapter,
@@ -84,6 +85,7 @@ export type {
   ProviderSettingsUpdate,
   ProviderSettingsSnapshot,
   CustomOpenAISettings,
+  PreferredModelSelection,
 } from './config/provider-settings.js';
 export {
   ProviderPoliciesStore,

@@ -181,6 +181,8 @@ export function resolveAdapter(
       orderForCall: (context) => management.orderForCall(context),
       quote: (providerId, model, now) => management.quote(providerId, model, now),
       recordUsage: (event) => management.recordUsage(event),
+      reserveCall: (context) => management.reserveCall(context),
+      completeReservation: (id, event) => management.completeReservation(id, event),
     });
   }
 
@@ -245,7 +247,9 @@ function registerCoreProviders(registry: PluginRegistry, settings?: ProviderSett
     builtIns.push(new OpenAICompatibleAdapter(
       () => settings.customOpenAIProviderConfig(),
       {
-        apiKey: () => settings.apiKey('openai-compatible'),
+        apiKey: () => settings.customOpenAI().apiKeyRequired
+          ? settings.apiKey('openai-compatible')
+          : undefined,
         allowMissingApiKey: () => !settings.customOpenAI().apiKeyRequired,
       },
     ));

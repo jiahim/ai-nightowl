@@ -450,6 +450,12 @@ function validateDates(value: unknown, path: string): string[] {
   const result: string[] = [];
   for (const date of value) {
     if (typeof date !== 'string' || !DATE_PATTERN.test(date)) throw new Error(`${path} 必须使用 YYYY-MM-DD`);
+    const [year, month, day] = date.split('-').map(Number);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (year < 1 || month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]) {
+      throw new Error(`${path} 包含不存在的日历日期：${date}`);
+    }
     if (!result.includes(date)) result.push(date);
   }
   return result;

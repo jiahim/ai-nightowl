@@ -68,7 +68,7 @@ AI 只把“复杂任务、8 万 tokens、可等 6 小时、优先省钱”这�
 - `GET /settings/providers`：返回 Provider 目录、画像来源、当前有效价格与额度使用情况；
 - `PUT /settings/providers`：保存 `preferredProvider`、`priority`、`profiles` 或 `clearProfiles`；
 - `POST /settings/providers/recommend`：请求体 `{ "request": "..." }`，返回意图识别、候选、预计费用、等待后的更低价和限制原因；
-- `POST /settings/providers/apply`：请求体 `{ "optionId": "provider:model", "priority": "cost" }`，确认并立即应用候选。
+- `POST /settings/providers/apply`：请求体 `{ "recommendationId": "rec-...", "optionId": "provider:model" }`；服务会按最新凭据、价格与额度重新核验后，持久化平台和模型选择。
 
 Web Console 的“模型设置”封装了同一流程：常见套餐可直接填写工作日倍率、非工作日倍率、优惠时段和一个周期额度；复杂套餐可编辑完整 JSON。
 

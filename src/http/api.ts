@@ -560,6 +560,13 @@ export class HttpApi {
     }
 
     if (!changed) throw new HttpError(400, '没有可保存的 Provider 设置');
+    // 先完整校验两个文件的候选状态，避免前半部分已落盘后才因后半部分非法返回 400。
+    try {
+      if (providerSettingsChanged) this.providerSettings.validateUpdate(update);
+      if (providerPoliciesChanged) this.providerPolicies!.validateUpdate(policyUpdate);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : 'Provider 设置非法');
+    }
     if (providerSettingsChanged) {
       try {
         await this.providerSettings.update(update);
@@ -596,15 +603,24 @@ export class HttpApi {
       throw new HttpError(501, 'Provider 决策应用不可用');
     }
     const input = asObject(body);
-    if (typeof input.optionId !== 'string') throw new HttpError(400, '缺少 optionId');
-    const option = this.providerManagement.candidateExists(input.optionId);
-    if (!option) throw new HttpError(400, '推荐候选已失效，请重新分析');
-    const priority = input.priority === undefined ? this.providerPolicies.priority() : String(input.priority);
-    if (!['cost', 'balanced', 'speed', 'quality'].includes(priority)) {
-      throw new HttpError(400, 'priority 非法');
+    if (typeof input.recommendationId !== 'string' || !input.recommendationId.trim()) {
+      throw new HttpError(400, '缺少 recommendationId，请重新分析');
     }
-    await this.providerSettings.update({ preferredProvider: option.providerId });
-    await this.providerPolicies.update({ priority: priority as ProviderPoliciesUpdate['priority'] });
+    if (typeof input.optionId !== 'string') throw new HttpError(400, '缺少 optionId');
+    let option: { providerId: string; model: string; priority: 'cost' | 'balanced' | 'speed' | 'quality' };
+    try {
+      option = await this.providerManagement.revalidateRecommendation(
+        input.recommendationId.trim(),
+        input.optionId,
+      );
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : '推荐候选已失效，请重新分析');
+    }
+    await this.providerSettings.update({
+      preferredProvider: option.providerId,
+      preferredModel: { providerId: option.providerId, model: option.model },
+    });
+    await this.providerPolicies.update({ priority: option.priority });
     await this.providerManagement.refreshRemoteUsage(option.providerId, true);
     return this.json(200, {
       applied: true,

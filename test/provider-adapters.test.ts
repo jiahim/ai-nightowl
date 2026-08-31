@@ -134,15 +134,20 @@ test('自定义 OpenAI 兼容适配器支持动态 Base URL、无密钥本地接
     id: 'openai-compatible',
     name: 'Local API',
     baseUrl: 'http://127.0.0.1:11434/v1/',
-    apiKeyEnv: 'OPENAI_COMPATIBLE_API_KEY',
+    // PATH 故意代表一个已有环境值：显式 apiKey resolver 返回 undefined 时
+    // 不得回退到环境变量并把无关旧值发送给无密钥端点。
+    apiKeyEnv: 'PATH',
     models: [{ name: 'local-chat', kind: 'chat', inputPrice: 0, outputPrice: 0, contextWindow: 32_000 }],
     costStrategy: {},
   };
   const calls: string[] = [];
+  const headers: Array<Record<string, string>> = [];
   const adapter = new OpenAICompatibleAdapter(() => config, {
     allowMissingApiKey: true,
-    fetch: (async (input) => {
+    apiKey: () => undefined,
+    fetch: (async (input, init) => {
       calls.push(String(input));
+      headers.push(init?.headers as Record<string, string>);
       if (String(input).endsWith('/models')) {
         return jsonResponse({ data: [{ id: 'local-chat', owned_by: 'local' }] });
       }
@@ -157,4 +162,5 @@ test('自定义 OpenAI 兼容适配器支持动态 Base URL、无密钥本地接
     'http://127.0.0.1:11434/v1/chat/completions',
     'http://localhost:9000/v1/models',
   ]);
+  assert.ok(headers.every((item) => item.Authorization === undefined));
 });

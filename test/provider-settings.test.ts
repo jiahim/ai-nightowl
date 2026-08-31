@@ -117,6 +117,33 @@ test('Provider 设置 API 拒绝空密钥与未知平台', async (t) => {
   assert.equal(unknown.status, 400);
 });
 
+test('Provider 设置校验失败不会留下内存或后续落盘的部分更新', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-provider-atomic-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const env: NodeJS.ProcessEnv = {};
+  const settings = new ProviderSettingsStore(dir, { env });
+
+  await assert.rejects(settings.update({
+    preferredProvider: 'openai',
+    apiKeys: { openai: 'must-not-stick' },
+    customOpenAI: {
+      enabled: true,
+      name: 'Incomplete',
+      baseUrl: 'https://gateway.example.com/v1',
+      apiKeyRequired: true,
+      models: [],
+    },
+  }), /至少需要一个模型/);
+
+  assert.equal(settings.snapshot().preferredProvider, 'auto');
+  assert.equal(settings.snapshot().providers.find((item) => item.id === 'openai')?.source, null);
+  assert.equal(env.OPENAI_API_KEY, undefined);
+
+  await settings.update({ preferredProvider: 'deepseek' });
+  const persisted = await readFile(join(dir, '.provider-secrets.json'), 'utf-8');
+  assert.doesNotMatch(persisted, /must-not-stick/);
+});
+
 test('MiniMax 普通、MiniMax Plan、OpenAI 与自定义兼容接口分别保存且不回显密钥', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'nightowl-provider-expanded-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -189,6 +216,33 @@ test('自定义 OpenAI 可显式配置为无需 Key，但拒绝不安全或不�
     } },
   });
   assert.equal(unsafe.status, 400);
+});
+
+test('自定义接口切换到无需 Key 时清除本地旧密钥', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-provider-no-key-transition-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const env: NodeJS.ProcessEnv = {};
+  const settings = new ProviderSettingsStore(dir, { env });
+  const keyed = {
+    enabled: true,
+    name: 'Remote Gateway',
+    baseUrl: 'https://gateway.example.com/v1',
+    apiKeyRequired: true,
+    models: [{ name: 'remote-chat', kind: 'chat' as const, inputPrice: 1, outputPrice: 2, contextWindow: 32_000 }],
+  };
+  await settings.update({ apiKeys: { 'openai-compatible': 'old-custom-secret' }, customOpenAI: keyed });
+  assert.equal(env.OPENAI_COMPATIBLE_API_KEY, 'old-custom-secret');
+
+  await settings.update({ customOpenAI: {
+    ...keyed,
+    name: 'Local Gateway',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    apiKeyRequired: false,
+  } });
+
+  assert.equal(settings.apiKey('openai-compatible'), undefined);
+  assert.equal(env.OPENAI_COMPATIBLE_API_KEY, undefined);
+  assert.doesNotMatch(await readFile(join(dir, '.provider-secrets.json'), 'utf-8'), /old-custom-secret/);
 });
 
 test('旧版 Provider 密钥文件可无损迁移读取', async (t) => {
