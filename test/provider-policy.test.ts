@@ -285,6 +285,16 @@ test('成功调用的账本落盘失败时保留额度占用并在恢复前暂�
   assert.equal(calls, 1);
 
   ledgerAvailable = true;
+  const recoveredRecommendation = await management.recommend('优先省钱');
+  assert.equal(recoveredRecommendation.candidates[0].eligible, true);
+  assert.deepEqual(
+    await management.revalidateRecommendation(
+      initialRecommendation.recommendationId,
+      initialRecommendation.candidates[0].optionId,
+    ),
+    { providerId: 'deepseek', model: 'deepseek-chat', priority: 'cost' },
+  );
+  assert.equal(management.snapshot().providers[0].usageAccounting.status, 'ready');
   await live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'after recovery' }]);
   assert.equal(calls, 2);
   assert.equal(usage.events().length, 2);

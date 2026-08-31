@@ -325,6 +325,7 @@ export class ProviderManagementService {
   async recommend(request: string, now: Date = new Date()): Promise<ProviderRecommendation> {
     const clean = request.trim().slice(0, 4000);
     if (!clean) throw new Error('请描述任务对成本、速度或质量的要求');
+    await this.retryPendingUsage();
     await this.refreshRemoteUsage();
     const fallback = inferProviderIntent(clean, this.policies.priority());
     let intent = fallback;
@@ -396,6 +397,7 @@ export class ProviderManagementService {
     }
     const original = saved.value.candidates.find((candidate) => candidate.optionId === optionId);
     if (!original) throw new Error('推荐候选不存在，请重新分析');
+    await this.retryPendingUsage(original.providerId);
     await this.refreshRemoteUsage(original.providerId, true);
     const intent = saved.value.interpretation;
     const estimate = {
@@ -550,8 +552,8 @@ export class ProviderManagementService {
     }
   }
 
-  private retryPendingUsage(): Promise<void> {
-    return this.serializeAdmission(() => this.retryPendingUsageUnlocked());
+  private retryPendingUsage(providerId?: string): Promise<void> {
+    return this.serializeAdmission(() => this.retryPendingUsageUnlocked(providerId));
   }
 
   private async retryPendingUsageUnlocked(providerId?: string): Promise<void> {
