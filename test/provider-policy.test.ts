@@ -224,6 +224,60 @@ test('并发调用会先预留额度，不会同时越过最后一次请求限�
   assert.equal(usage.events().length, 1);
 });
 
+test('成功调用的账本落盘失败时保留额度占用并阻止继续超额', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-ledger-failure-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let calls = 0;
+  const base = adapter('deepseek', 1);
+  const provider: ProviderAdapter = {
+    ...base,
+    async chat(target) {
+      calls += 1;
+      return { content: 'ok', model: target, providerId: 'deepseek' };
+    },
+  };
+  const settings = new ProviderSettingsStore(dir, { env: { DEEPSEEK_API_KEY: 'd' } });
+  const policies = new ProviderPoliciesStore(dir);
+  await policies.update({ profiles: { deepseek: policy({
+    usageLimits: [{ id: 'daily-request', label: '每日调用', period: 'day', unit: 'requests', limit: 1 }],
+  }) } });
+  const usage = new ProviderUsageLedger(dir);
+  const persistUsage = usage.record.bind(usage);
+  let ledgerAvailable = false;
+  usage.record = async (event) => {
+    if (!ledgerAvailable) throw new Error('simulated ledger write failure');
+    await persistUsage(event);
+  };
+  const management = new ProviderManagementService([provider], settings, policies, usage, () => true);
+  const live = new LiveProviderAdapter([provider], {
+    preferredProvider: () => settings.effectivePreferredProvider(),
+    isAvailable: () => true,
+    routeModel: (kind) => management.routeModel(kind),
+    primaryProvider: (kind) => management.currentProvider(kind),
+    orderForCall: (context) => management.orderForCall(context),
+    quote: (providerId, model, now) => management.quote(providerId, model, now),
+    reserveCall: (context) => management.reserveCall(context),
+    completeReservation: (id, event) => management.completeReservation(id, event),
+  });
+
+  await live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'first' }]);
+  assert.equal(calls, 1);
+  assert.equal(usage.events().length, 0);
+  await assert.rejects(
+    live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'must not run' }]),
+    /没有满足凭据、预算与周期额度约束的 Provider/,
+  );
+  assert.equal(calls, 1);
+
+  ledgerAvailable = true;
+  await assert.rejects(
+    live.chat(live.routeModel('execute').name, [{ role: 'user', content: 'still exhausted' }]),
+    /没有满足凭据、预算与周期额度约束的 Provider/,
+  );
+  assert.equal(calls, 1);
+  assert.equal(usage.events().length, 1);
+});
+
 test('设置 API 可保存画像、给出可解释候选并一键应用', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'nightowl-policy-api-'));
   t.after(() => rm(dir, { recursive: true, force: true }));

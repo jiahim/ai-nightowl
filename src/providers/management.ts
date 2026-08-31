@@ -101,6 +101,7 @@ export class ProviderManagementService {
   private readonly remoteUsage = new Map<string, ProviderRemoteUsage>();
   private readonly remoteUsageAttemptedAt = new Map<string, number>();
   private readonly reservations = new Map<string, UsageEvent>();
+  private readonly pendingReservations = new Set<string>();
   private readonly recommendations = new Map<string, { value: ProviderRecommendation; expiresAt: number }>();
   private admissionTail: Promise<void> = Promise.resolve();
   private interpreter?: ProviderIntentInterpreter;
@@ -166,6 +167,7 @@ export class ProviderManagementService {
   }
 
   async orderForCall(context: ProviderCallContext): Promise<Array<[ProviderAdapter, string]>> {
+    await this.retryPendingUsage();
     await this.refreshRemoteUsage();
     const kind = this.requestedKind(context.requestedModel, context.taskKind);
     const ranked = this.rank({ ...context, taskKind: kind });
@@ -202,12 +204,24 @@ export class ProviderManagementService {
   }
 
   async recordUsage(event: UsageEvent): Promise<void> {
-    await this.serializeAdmission(() => this.usage.record(event));
+    const id = randomUUID();
+    await this.serializeAdmission(async () => {
+      this.reservations.set(id, structuredClone(event));
+      try {
+        await this.usage.record(event);
+        this.reservations.delete(id);
+      } catch (error) {
+        this.pendingReservations.add(id);
+        throw error;
+      }
+    });
   }
 
   /** 在上游调用前原子预留预计额度，避免并发请求同时越过最后余量。 */
   reserveCall(request: ProviderReservationRequest): Promise<string | null> {
     return this.serializeAdmission(async () => {
+      await this.retryPendingUsageUnlocked(request.providerId);
+      if (this.hasPendingUsage(request.providerId)) return null;
       const adapter = this.byId.get(request.providerId);
       const model = adapter?.config.models.find((item) => item.name === request.model);
       if (!adapter || !model || !this.available(adapter)) return null;
@@ -238,10 +252,21 @@ export class ProviderManagementService {
   completeReservation(id: string, event?: UsageEvent): Promise<void> {
     return this.serializeAdmission(async () => {
       if (!this.reservations.has(id)) return;
-      try {
-        if (event) await this.usage.record(event);
-      } finally {
+      if (!event) {
+        if (this.pendingReservations.has(id)) return;
         this.reservations.delete(id);
+        return;
+      }
+      // 先把估算替换为实际用量。若落盘失败则继续留在内存中参与额度计算，
+      // 并暂停该 Provider 的新调用，直到后续请求重试落盘成功。
+      this.reservations.set(id, structuredClone(event));
+      try {
+        await this.usage.record(event);
+        this.pendingReservations.delete(id);
+        this.reservations.delete(id);
+      } catch (error) {
+        this.pendingReservations.add(id);
+        throw error;
       }
     });
   }
@@ -507,6 +532,35 @@ export class ProviderManagementService {
       if (!oldest) break;
       this.recommendations.delete(oldest);
     }
+  }
+
+  private retryPendingUsage(): Promise<void> {
+    return this.serializeAdmission(() => this.retryPendingUsageUnlocked());
+  }
+
+  private async retryPendingUsageUnlocked(providerId?: string): Promise<void> {
+    for (const id of [...this.pendingReservations]) {
+      const event = this.reservations.get(id);
+      if (!event) {
+        this.pendingReservations.delete(id);
+        continue;
+      }
+      if (providerId && event.providerId !== providerId) continue;
+      try {
+        await this.usage.record(event);
+        this.pendingReservations.delete(id);
+        this.reservations.delete(id);
+      } catch {
+        // 保留实际用量；reserveCall 会暂停这个 Provider，避免账本故障时继续超额。
+      }
+    }
+  }
+
+  private hasPendingUsage(providerId: string): boolean {
+    for (const id of this.pendingReservations) {
+      if (this.reservations.get(id)?.providerId === providerId) return true;
+    }
+    return false;
   }
 
   private serializeAdmission<T>(work: () => Promise<T>): Promise<T> {
