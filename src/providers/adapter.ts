@@ -28,13 +28,36 @@ export interface ChatResult {
   pricing?: {
     offPeak: boolean;
     discount: number;
+    /** 命中的资费规则，便于成本审计与 UI 解释。 */
+    ruleId?: string | null;
+    label?: string;
+    timezone?: string;
+    source?: 'provider' | 'configured';
   };
+}
+
+export interface ProviderUsageWindow {
+  id: string;
+  label: string;
+  period: 'rolling' | 'week';
+  windowMinutes?: number;
+  /** Provider 返回的剩余额度百分比；可能因 boost 大于 100。 */
+  remainingPercent?: number;
+  status: 'available' | 'exhausted' | 'unlimited' | 'unknown';
+  resetAt?: string;
+}
+
+export interface ProviderRemoteUsage {
+  source: 'provider-api';
+  fetchedAt: string;
+  windows: ProviderUsageWindow[];
+  warning?: string;
 }
 
 /**
  * 平台适配器接口。
  *
- * 所有国内平台（DeepSeek / Kimi / MiniMax / ...）都实现这个接口。
+ * 所有平台（DeepSeek / MiniMax / OpenAI / 自定义兼容接口 / ...）都实现这个接口。
  * 成本策略抽象在这里：不同平台省钱维度不同，统一用
  * isOffPeak / currentDiscount / routeModel 三个方法暴露。
  */
@@ -50,6 +73,11 @@ export interface ProviderAdapter {
 
   /** 按任务类型选模型（简单任务降档省钱） */
   routeModel(kind: TaskKind): ModelSpec;
+
+  /** 可选：从 Provider 官方接口读取套餐额度；不支持的平台省略。 */
+  queryUsage?(
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<ProviderRemoteUsage>;
 
   /** 调用模型（OpenAI 兼容 chat/completions） */
   chat(

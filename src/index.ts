@@ -8,14 +8,97 @@
 export * from './types.js';
 export { DeepSeekAdapter } from './providers/deepseek.js';
 export { ZhipuAdapter } from './providers/zhipu.js';
+export { MiniMaxAdapter, MiniMaxPlanAdapter } from './providers/minimax.js';
+export { OpenAIAdapter } from './providers/openai.js';
+export { OpenAICompatibleAdapter } from './providers/openai-compatible.js';
+export type {
+  OpenAICompatibleAdapterOptions,
+  DiscoveredOpenAIModel,
+} from './providers/openai-compatible.js';
 export { FailoverAdapter, isRetryableProviderError } from './providers/failover.js';
-export type { ProviderAdapter, ChatResult } from './providers/adapter.js';
+export { LiveProviderAdapter } from './providers/live.js';
+export type { LiveProviderRouting } from './providers/live.js';
+export {
+  defaultProviderPolicy,
+  cloneProviderPolicy,
+  validateProviderPolicy,
+  evaluatePricing,
+  estimateQuoteCost,
+  usageLimitStatuses,
+  estimateFitsLimits,
+  usagePeriodKey,
+  isWorkingDay,
+} from './providers/policy.js';
+export type {
+  BillingDayType,
+  UsageLimitPeriod,
+  UsageLimitUnit,
+  ProviderPriority,
+  PriceRate,
+  PricingWindow,
+  PricingRule,
+  UsageLimit,
+  ProviderPolicy,
+  PricingQuote,
+  UsageEvent,
+  UsageLimitStatus,
+  ProviderCallEstimate,
+  ProviderCandidate,
+} from './providers/policy.js';
+export {
+  ProviderManagementService,
+  inferProviderIntent,
+  validateIntent,
+  usageEventFromResult,
+} from './providers/management.js';
+export type {
+  ProviderIntent,
+  ProviderRecommendationCandidate,
+  ProviderRecommendation,
+  ProviderIntentInterpreter,
+  ProviderManagementSnapshot,
+  ProviderCallContext,
+} from './providers/management.js';
+export type {
+  ProviderAdapter,
+  ChatResult,
+  ProviderUsageWindow,
+  ProviderRemoteUsage,
+} from './providers/adapter.js';
 export { ProviderRequestError } from './providers/adapter.js';
 export { PlanState } from './plan/state.js';
 export { Store } from './memory/store.js';
 export { StoreReadError } from './memory/store.js';
 export { STORE_SCHEMA_VERSION } from './memory/store.js';
 export type { StoreState } from './memory/store.js';
+export {
+  ProviderSettingsStore,
+  ProviderSettingsError,
+  PROVIDER_SETTINGS_VERSION,
+  MANAGED_PROVIDER_DEFINITIONS,
+} from './config/provider-settings.js';
+export type {
+  BuiltInProviderId,
+  PreferredProvider,
+  ProviderCredentialSource,
+  ProviderSettingsUpdate,
+  ProviderSettingsSnapshot,
+  CustomOpenAISettings,
+} from './config/provider-settings.js';
+export {
+  ProviderPoliciesStore,
+  ProviderPoliciesError,
+  PROVIDER_POLICIES_VERSION,
+} from './config/provider-policies.js';
+export type {
+  ProviderPoliciesUpdate,
+  ProviderPoliciesSnapshot,
+} from './config/provider-policies.js';
+export {
+  ProviderUsageLedger,
+  ProviderUsageError,
+  PROVIDER_USAGE_VERSION,
+} from './config/provider-usage.js';
 export { Summarizer } from './memory/summarizer.js';
 export type {
   SummarizeFn,

@@ -21,6 +21,9 @@ import { HttpApi, type HttpResponse } from './api.js';
 import { Store } from '../memory/store.js';
 import { DeepSeekAdapter } from '../providers/deepseek.js';
 import { ZhipuAdapter } from '../providers/zhipu.js';
+import { MiniMaxAdapter, MiniMaxPlanAdapter } from '../providers/minimax.js';
+import { OpenAIAdapter } from '../providers/openai.js';
+import { OpenAICompatibleAdapter } from '../providers/openai-compatible.js';
 import { FailoverAdapter } from '../providers/failover.js';
 import type { ProviderAdapter } from '../providers/adapter.js';
 import { Executor } from '../executor/executor.js';
@@ -36,6 +39,15 @@ import {
   loadPluginModules,
 } from '../plugins/registry.js';
 import { getWebAsset } from '../web/console.js';
+import {
+  MANAGED_PROVIDER_DEFINITIONS,
+  ProviderSettingsStore,
+  type BuiltInProviderId,
+} from '../config/provider-settings.js';
+import { ProviderPoliciesStore } from '../config/provider-policies.js';
+import { ProviderUsageLedger } from '../config/provider-usage.js';
+import { ProviderManagementService } from '../providers/management.js';
+import { LiveProviderAdapter } from '../providers/live.js';
 
 export interface ServeOptions {
   host?: string;
@@ -141,34 +153,65 @@ export function createHttpServer(api: HttpApi): Server {
  * CostTracker：execute 与 judge 的每次模型调用都记录 token 成本，供 GET /cost 查询。
  */
 /**
- * 按环境选择平台链（Failover）。
- * 用户模型策略（2026-08-21）：正常 DeepSeek v4-flash；flash 没钱 → glm-5.3 顶上；
- * 困难问题 → v4-pro / glm-5.3。failover 按模型名路由链，429/5xx/网络自动切下一个平台。
+ * 按环境选择平台链（Failover）。管理模式会统一纳入所有内建与插件 Provider，
+ * 按价格、官方/本地额度和用户偏好动态排序；旧嵌入调用仍保持环境变量回退链。
  *
- * - env `NIGHTOWL_PROVIDER=deepseek|zhipu` 显式锁定首选平台
- * - 缺省：有 DEEPSEEK_API_KEY → deepseek 优先；否则 zhipu
+ * - env `NIGHTOWL_PROVIDER=<provider id>` 显式锁定首选平台
+ * - 缺省：按已配置的内建 Provider 顺序，再接可信插件 Provider
  * - 都没 key：仍包 DeepSeek（保留 "Missing API key" 报错语义）
  */
-export function resolveAdapter(registry: PluginRegistry = new PluginRegistry()): ProviderAdapter {
+export function resolveAdapter(
+  registry: PluginRegistry = new PluginRegistry(),
+  options: {
+    providerSettings?: ProviderSettingsStore;
+    providerManagement?: ProviderManagementService;
+  } = {},
+): ProviderAdapter {
   const provider = process.env.NIGHTOWL_PROVIDER;
-  const hasDeepseek = Boolean(process.env.DEEPSEEK_API_KEY);
-  const hasZhipu = Boolean(process.env.ZHIPU_API_KEY);
+  registerCoreProviders(registry, options.providerSettings);
 
-  if (!registry.provider('deepseek')) registry.registerCoreProvider(new DeepSeekAdapter());
-  if (!registry.provider('zhipu')) registry.registerCoreProvider(new ZhipuAdapter());
+  if (options.providerManagement) {
+    const adapters = orderedProviders(registry);
+    const management = options.providerManagement;
+    return new LiveProviderAdapter(adapters, {
+      preferredProvider: () => options.providerSettings?.effectivePreferredProvider(),
+      isAvailable: (adapter) => management.isAvailable(adapter),
+      routeModel: (kind) => management.routeModel(kind),
+      primaryProvider: (kind) => management.currentProvider(kind),
+      orderForCall: (context) => management.orderForCall(context),
+      quote: (providerId, model, now) => management.quote(providerId, model, now),
+      recordUsage: (event) => management.recordUsage(event),
+    });
+  }
+
+  if (options.providerSettings) {
+    const builtIns = MANAGED_PROVIDER_DEFINITIONS.map((item) => item.id)
+      .map((id) => registry.provider(id))
+      .filter((adapter): adapter is ProviderAdapter => Boolean(adapter));
+    const others = registry.providers().filter((adapter) => !builtIns.includes(adapter));
+    return new LiveProviderAdapter([...builtIns, ...others], {
+      preferredProvider: () => options.providerSettings!.effectivePreferredProvider(),
+      isAvailable: (adapter) => isManagedProviderId(adapter.id)
+        ? options.providerSettings!.isConfigured(adapter.id)
+        : true,
+    });
+  }
 
   const adapters: ProviderAdapter[] = [];
+  const managedIds = new Set<string>(MANAGED_PROVIDER_DEFINITIONS.map((item) => item.id));
+  const configuredManaged = orderedProviders(registry).filter((adapter) =>
+    managedIds.has(adapter.id) && Boolean(process.env[adapter.config.apiKeyEnv]));
   if (provider) {
     const explicit = registry.provider(provider);
     if (!explicit) throw new Error(`未知 NIGHTOWL_PROVIDER：${provider}`);
     adapters.push(explicit);
-    if (provider !== 'deepseek' && hasDeepseek) adapters.push(registry.provider('deepseek')!);
-    if (provider !== 'zhipu' && hasZhipu) adapters.push(registry.provider('zhipu')!);
+    for (const adapter of configuredManaged) {
+      if (adapter.id !== provider) adapters.push(adapter);
+    }
   } else {
-    if (hasDeepseek) adapters.push(registry.provider('deepseek')!);
-    if (hasZhipu) adapters.push(registry.provider('zhipu')!);
+    adapters.push(...configuredManaged);
     for (const adapter of registry.providers()) {
-      if (adapter.id !== 'deepseek' && adapter.id !== 'zhipu') adapters.push(adapter);
+      if (!managedIds.has(adapter.id)) adapters.push(adapter);
     }
   }
   if (adapters.length === 0) adapters.push(registry.provider('deepseek')!);
@@ -178,14 +221,90 @@ export function resolveAdapter(registry: PluginRegistry = new PluginRegistry()):
     : new FailoverAdapter(adapters);
 }
 
+function orderedProviders(registry: PluginRegistry): ProviderAdapter[] {
+  const builtIns = MANAGED_PROVIDER_DEFINITIONS.map((item) => item.id)
+    .map((id) => registry.provider(id))
+    .filter((adapter): adapter is ProviderAdapter => Boolean(adapter));
+  const others = registry.providers().filter((adapter) => !builtIns.includes(adapter));
+  return [...builtIns, ...others];
+}
+
+function isManagedProviderId(id: string): id is BuiltInProviderId {
+  return MANAGED_PROVIDER_DEFINITIONS.some((provider) => provider.id === id);
+}
+
+function registerCoreProviders(registry: PluginRegistry, settings?: ProviderSettingsStore): void {
+  const builtIns: ProviderAdapter[] = [
+    new DeepSeekAdapter(),
+    new ZhipuAdapter(),
+    new MiniMaxAdapter(),
+    new MiniMaxPlanAdapter(),
+    new OpenAIAdapter(),
+  ];
+  if (settings) {
+    builtIns.push(new OpenAICompatibleAdapter(
+      () => settings.customOpenAIProviderConfig(),
+      {
+        apiKey: () => settings.apiKey('openai-compatible'),
+        allowMissingApiKey: () => !settings.customOpenAI().apiKeyRequired,
+      },
+    ));
+  }
+  for (const adapter of builtIns) {
+    if (!registry.provider(adapter.id)) registry.registerCoreProvider(adapter);
+  }
+}
+
 export function buildServeApi(
   dir: string,
   options: { plugins?: PluginRegistry } = {},
 ): HttpApi {
   const store = new Store(dir);
   const plugins = options.plugins ?? new PluginRegistry();
-  const adapter = resolveAdapter(plugins);
+  const providerSettings = new ProviderSettingsStore(dir);
+  registerCoreProviders(plugins, providerSettings);
+  const providerPolicies = new ProviderPoliciesStore(dir);
+  const providerUsage = new ProviderUsageLedger(dir);
+  const providerManagement = new ProviderManagementService(
+    orderedProviders(plugins),
+    providerSettings,
+    providerPolicies,
+    providerUsage,
+    (provider) => isManagedProviderId(provider.id)
+      ? providerSettings.isConfigured(provider.id)
+      : true,
+  );
+  const adapter = resolveAdapter(plugins, { providerSettings, providerManagement });
   const tracker = new CostTracker();
+
+  providerManagement.setIntentInterpreter(async (request, fallback, catalog) => {
+    const spec = adapter.routeModel('plan');
+    const result = await adapter.chat(spec.name, [
+      {
+        role: 'system',
+        content: [
+          '你只负责把用户的 Provider 选择需求归一化为 JSON，不判断价格，也不编造 Provider 信息。',
+          '只输出一个 JSON 对象，可用字段：priority(cost|balanced|speed|quality)、taskKind(plan|execute|judge|summarize)、expectedPromptTokens、expectedCompletionTokens、maxWaitMinutes、maxCost。',
+          `可用目录：${JSON.stringify(catalog)}`,
+          `本地初判：${JSON.stringify(fallback)}`,
+        ].join('\n'),
+      },
+      { role: 'user', content: request },
+    ], { maxTokens: 500 });
+    const parsed = parseFirstJsonObject(result.content);
+    if (result.usage) {
+      tracker.record({
+        model: result.spec ?? spec,
+        providerId: result.providerId,
+        kind: 'provider-advisor',
+        promptTokens: result.usage.promptTokens,
+        completionTokens: result.usage.completionTokens,
+        offPeak: result.pricing?.offPeak ?? adapter.isOffPeak(new Date()),
+        discount: result.pricing?.discount ?? adapter.currentDiscount(new Date()),
+      });
+    }
+    return parsed;
+  });
   const configuredInterval = Number(process.env.NIGHTOWL_TICK_INTERVAL_MS ?? 1000);
   const tickIntervalMs = Number.isFinite(configuredInterval)
     ? Math.max(0, Math.floor(configuredInterval))
@@ -257,7 +376,24 @@ export function buildServeApi(
 
   const controller = new RunController(loop);
 
-  return new HttpApi({ store, loop, tracker, controller, plugins });
+  return new HttpApi({
+    store,
+    loop,
+    tracker,
+    controller,
+    plugins,
+    providerSettings,
+    providerPolicies,
+    providerManagement,
+  });
+}
+
+function parseFirstJsonObject(content: string): Record<string, unknown> {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+  const source = fenced ?? content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1);
+  const parsed = JSON.parse(source) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('AI 未返回合法对象');
+  return parsed as Record<string, unknown>;
 }
 
 /** 监听；成功返回 Server（已 listen） */

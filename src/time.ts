@@ -8,18 +8,47 @@
 
 const TIMEZONE = 'Asia/Shanghai';
 
-/** 获取指定时刻在北京时区的一天内分钟数（0-1439） */
-export function minutesInBeijing(now: Date): number {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TIMEZONE,
+export interface ZonedDateParts {
+  year: number;
+  month: number;
+  day: number;
+  dayOfWeek: number;
+  hour: number;
+  minute: number;
+}
+
+/** 获取任意 IANA 时区下的本地日历字段；dayOfWeek 为 0=周日 … 6=周六。 */
+export function zonedDateParts(now: Date, timeZone: string): ZonedDateParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
   }).formatToParts(now);
-  let hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
-  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
-  if (hour === 24) hour = 0; // 午夜时 Intl 可能返回 24
-  return hour * 60 + minute;
+  const value = (type: Intl.DateTimeFormatPartTypes): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? '0');
+  let hour = value('hour');
+  if (hour === 24) hour = 0;
+  const year = value('year');
+  const month = value('month');
+  const day = value('day');
+  return {
+    year,
+    month,
+    day,
+    dayOfWeek: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+    hour,
+    minute: value('minute'),
+  };
+}
+
+/** 获取指定时刻在北京时区的一天内分钟数（0-1439） */
+export function minutesInBeijing(now: Date): number {
+  const parts = zonedDateParts(now, TIMEZONE);
+  return parts.hour * 60 + parts.minute;
 }
 
 /** 解析 'HH:MM' 为分钟数 */

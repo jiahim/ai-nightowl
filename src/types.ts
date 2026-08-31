@@ -106,6 +106,19 @@ export interface ModelSpec {
   contextWindow: number;
 }
 
+/** Provider 自报的周期额度；人工画像会复用同一结构。 */
+export interface ProviderUsageLimitSpec {
+  id: string;
+  label: string;
+  /** rolling 用于“最近 N 分钟”，其余按画像时区的自然日/周/月。 */
+  period: 'rolling' | 'day' | 'week' | 'month';
+  /** period=rolling 时必填。 */
+  windowMinutes?: number;
+  unit: 'requests' | 'tokens' | 'cost';
+  limit: number;
+  warningAt?: number;
+}
+
 /**
  * 成本优化策略。
  *
@@ -116,6 +129,8 @@ export interface ModelSpec {
  * 所以这里不做"每平台都有低价时段"的假设，而是每个平台配一套策略。
  */
 export interface CostStrategy {
+  /** 价格日历使用的 IANA 时区；旧 Provider 未配置时按 Asia/Shanghai。 */
+  timezone?: string;
   /** 高峰时段列表（全价），其余为空闲（打折）。
    *  DeepSeek 官方：高峰 9:00-12:00、14:00-18:00（北京），其余空闲 5 折。
    *  'HH:MM' 格式，北京时间。Kimi/MiniMax 无时段折扣，不配此项。 */
@@ -126,6 +141,8 @@ export interface CostStrategy {
   batchDiscount?: number;
   /** 是否优先利用缓存命中（稳定前缀） */
   preferCache?: boolean;
+  /** Provider/套餐自报的周期额度，例如 MiniMax Plan 的 5 小时滚动请求数。 */
+  usageLimits?: ProviderUsageLimitSpec[];
 }
 
 /** 平台配置（声明式，存配置文件的形状） */

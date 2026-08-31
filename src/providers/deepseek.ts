@@ -44,6 +44,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       models: DEFAULT_MODELS,
       costStrategy: {
+        timezone: 'Asia/Shanghai',
         peakWindows: [
           { start: '09:00', end: '12:00' },
           { start: '14:00', end: '18:00' },

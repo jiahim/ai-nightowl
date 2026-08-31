@@ -76,6 +76,8 @@ NIGHTOWL_PROVIDER=acme-models \
 
 当前只有 Provider 能真正注册。其他 contribution 可以用于前瞻设计，但在对应扩展点交付前不会获得运行上下文。
 
+Provider 的 `models` 是固定目录价；`costStrategy.timezone/peakWindows/offPeakDiscount/usageLimits` 会自动转换为平台自报资费画像。没有峰谷价的平台不要声明窗口。滚动额度使用 `period: "rolling"` 与 `windowMinutes`。有稳定官方套餐接口的适配器还可以实现可选的 `queryUsage()`，返回剩余百分比和重置时间；工作日/节假日绝对价格仍可由用户画像覆盖。完整结构见 [Provider 资费、额度与智能匹配](provider-policies.md)。
+
 ## 信任与安全边界
 
 - 插件由用户在启动参数或环境变量中显式指定；Web 不接受代码路径或 URL；
